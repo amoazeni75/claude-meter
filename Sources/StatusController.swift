@@ -328,76 +328,9 @@ final class StatusController: NSObject, NSMenuDelegate {
             menu.addItem(mi)
         }
 
-        for account in all {
-            let mi = NSMenuItem(title: "", action: #selector(actionSelectAccount(_:)), keyEquivalent: "")
-            mi.target = self
-            mi.representedObject = account.uuid
-            mi.state = account.uuid == displayedID ? .on : .off
-
-            var line = pad(clip(account.displayName, 26), 27)
-            if let snapshot = account.lastSnapshot {
-                line += barText(snapshot, compact: true)
-            } else {
-                line += "—"
-            }
-            let status: String
-            if account.uuid == activeID {
-                status = "signed in"
-            } else if let at = account.lastFetchedAt {
-                status = agoText(at)
-            } else {
-                status = "no data"
-            }
-            line = pad(line, 44) + status
-
-            let s = NSMutableAttributedString(attributedString: mono(line))
-            // Grey anything that is not current, so a stale row can't be
-            // mistaken for a live one.
-            if !isFresh(account) {
-                s.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor,
-                               range: NSRange(location: 0, length: s.length))
-            }
-            mi.attributedTitle = s
-            mi.isEnabled = true
-            menu.addItem(mi)
-        }
-
-        menu.addItem(.separator())
-
-        // --- The displayed account's detail ---------------------------------
-        if let account = displayed, let snapshot = account.lastSnapshot {
-            for metric in snapshot.metrics {
-                let mi = NSMenuItem()
-                let line = "\(pad(metric.longLabel, 21))\(gauge(metric.percent)) "
-                    + String(format: "%3d%%", Int(metric.percent.rounded()))
-                    + "   \(resetText(metric.resetsAt))"
-                let s = NSMutableAttributedString(attributedString: mono(line))
-                let start = 21
-                let length = min(18, max(0, s.length - start))
-                if length > 0 {
-                    s.addAttribute(.foregroundColor, value: metric.level.color,
-                                   range: NSRange(location: start, length: length))
-                }
-                mi.attributedTitle = s
-                mi.isEnabled = false
-                menu.addItem(mi)
-            }
-
-            let status = NSMenuItem()
-            var text = "Updated \(agoText(snapshot.fetchedAt))"
-            if let error = errors[account.uuid] { text += " · \(error.localizedDescription)" }
-            if let wait = pacers[account.uuid]?.waitRemaining() {
-                text += " · next try in \(Int(wait.rounded()))s"
-            }
-            status.attributedTitle = mono(text, .secondaryLabelColor, size: 11)
-            status.isEnabled = false
-            menu.addItem(status)
-        } else {
-            let mi = NSMenuItem()
-            let text = displayedUUID.flatMap { errors[$0]?.localizedDescription } ?? "Loading…"
-            mi.attributedTitle = mono(text, .secondaryLabelColor, size: 11)
-            mi.isEnabled = false
-            menu.addItem(mi)
+        for (i, account) in all.enumerated() {
+            if i > 0 { menu.addItem(.separator()) }
+            addRows(for: account, activeID: activeID, displayedID: displayedID)
         }
 
         menu.addItem(.separator())
@@ -432,6 +365,86 @@ final class StatusController: NSObject, NSMenuDelegate {
         add("Open Usage on claude.ai", #selector(actionOpenWeb))
         menu.addItem(.separator())
         add("Quit Claude Meter", #selector(actionQuit), key: "q")
+    }
+
+    /// One account: a selectable header naming it, then its own usage gauges.
+    /// Every account gets the full readout, so the window answers "where am I
+    /// on each of these" without having to switch between them.
+    private func addRows(for account: StoredAccount, activeID: String?, displayedID: String?) {
+        let stale = !isFresh(account)
+        let nameWidth = 40
+
+        // The checkmark marks which account the menu bar follows. That is a
+        // different thing from which one is signed in, so the right-hand
+        // column says that separately.
+        let head = NSMenuItem(title: "", action: #selector(actionSelectAccount(_:)), keyEquivalent: "")
+        head.target = self
+        head.representedObject = account.uuid
+        head.state = account.uuid == displayedID ? .on : .off
+
+        var name = clip(account.displayName, 30)
+        if let plan = account.plan { name += " \u{00B7} \(plan)" }
+
+        var status = account.lastFetchedAt.map(agoText) ?? "no data"
+        if account.uuid == activeID { status = "signed in \u{00B7} " + status }
+
+        head.attributedTitle = NSAttributedString(
+            string: pad(name, nameWidth) + status,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: stale ? NSColor.secondaryLabelColor : NSColor.labelColor,
+            ])
+        head.isEnabled = true
+        menu.addItem(head)
+
+        if let snapshot = account.lastSnapshot {
+            for metric in snapshot.metrics {
+                let mi = NSMenuItem()
+                let indent = "   "
+                let line = indent + pad(metric.longLabel, 21)
+                    + gauge(metric.percent) + " "
+                    + String(format: "%3d%%", Int(metric.percent.rounded()))
+                    + "   " + resetText(metric.resetsAt)
+                let s = NSMutableAttributedString(attributedString: mono(line))
+                if stale {
+                    s.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor,
+                                   range: NSRange(location: 0, length: s.length))
+                } else {
+                    let start = indent.count + 21
+                    let length = min(18, max(0, s.length - start))
+                    if length > 0 {
+                        s.addAttribute(.foregroundColor, value: metric.level.color,
+                                       range: NSRange(location: start, length: length))
+                    }
+                }
+                mi.attributedTitle = s
+                mi.isEnabled = false
+                menu.addItem(mi)
+            }
+        } else {
+            let mi = NSMenuItem()
+            let text = errors[account.uuid]?.localizedDescription ?? "no readings yet"
+            mi.attributedTitle = mono("   " + text, .tertiaryLabelColor, size: 11)
+            mi.isEnabled = false
+            menu.addItem(mi)
+        }
+
+        // Anything this account is struggling with sits under its own rows,
+        // rather than in one global status line that cannot say which.
+        var notes: [String] = []
+        if account.lastSnapshot != nil, let error = errors[account.uuid] {
+            notes.append(error.localizedDescription)
+        }
+        if let wait = pacers[account.uuid]?.waitRemaining(), wait > 60 {
+            notes.append("next try in \(Int(wait.rounded()))s")
+        }
+        if !notes.isEmpty {
+            let mi = NSMenuItem()
+            mi.attributedTitle = mono("   " + notes.joined(separator: " \u{00B7} "),
+                                      .tertiaryLabelColor, size: 11)
+            mi.isEnabled = false
+            menu.addItem(mi)
+        }
     }
 
     @discardableResult

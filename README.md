@@ -29,21 +29,31 @@ sends, so a given number always reads the same colour.
 Click for a breakdown with reset countdowns.
 
 ```
- you@example.com · Max
- ─────────────────────────────────────────────────────
- Session (5h)         █████████░░░  76%   resets in 1h 12m
- Weekly (all models)  ███████████░  92%   resets in 2d 16h
- Weekly · Fable       ███████░░░░░  61%   resets in 2d 16h
- ─────────────────────────────────────────────────────
- Updated 8s ago
- Refresh Now                                        ⌘R
- ─────────────────────────────────────────────────────
+ ACCOUNTS
+ ✓ you@example.com · Max              signed in · 12s ago
+     Session (5h)         █████████░░░  76%   resets in 1h 12m
+     Weekly (all models)  ███████████░  92%   resets in 2d 16h
+     Weekly · Fable       ███████░░░░░  61%   resets in 2d 16h
+   ─────────────────────────────────────────────────────────
+   other@example.com · Max                        3h ago
+     Session (5h)         ██░░░░░░░░░░  12%   resets in 4h 02m
+     Weekly (all models)  █████░░░░░░░  41%   resets in 5d 03h
+ ─────────────────────────────────────────────────────────
+ Refresh Now                                            ⌘R
+ Follow Signed-in Account                                ✓
+ Add Another Account…
+ Forget Account                                          ▸
+ ─────────────────────────────────────────────────────────
  Compact Menu Bar
- Launch at Login                                     ✓
+ Launch at Login                                         ✓
  Open Usage on claude.ai
- ─────────────────────────────────────────────────────
- Quit Claude Meter                               ⌘Q
+ ─────────────────────────────────────────────────────────
+ Quit Claude Meter                                      ⌘Q
 ```
+
+Every account gets its full readout, so you can see where all of them stand
+without switching. The tick marks which account the menu bar follows; click
+another to move it. Anything not current is greyed and carries its age.
 
 ## Install
 
@@ -90,36 +100,62 @@ desktop app and claude.ai too, not just Claude Code.
 Polling is every 60 seconds, plus on wake from sleep and when you open the
 menu. The endpoint reports usage; it does not consume any.
 
-## Switching accounts
+## Multiple accounts
 
-If you sign into a different Claude account with `claude`, the app follows you:
+Claude Code holds exactly one credential and overwrites it whenever you switch,
+so an account you are not signed into stops being readable within eight hours.
+Claude Meter mirrors each account's credential into a Keychain item of its own
+as you use it, and renews the ones Claude Code has let go — so every account
+you have added stays live, not just the current one.
 
-- it re-reads the keychain on **every** poll rather than caching a token, so a
-  refreshed or replaced token is picked up on its own;
-- it watches `~/.claude.json` for login changes and switches within about a
-  second, discarding the previous account's numbers immediately rather than
-  showing stale figures under the wrong name;
-- the account it is currently reporting on is named at the top of the menu, so
-  the numbers are never ambiguous.
+To add an account, sign into it once:
+
+```bash
+claude auth login
+```
+
+It appears in the dropdown within about thirty seconds and stays up to date
+from then on, including after you switch back.
+
+**The rule that keeps this safe:** refresh tokens rotate, so whoever refreshes
+last invalidates every other holder. Claude Meter therefore renews *only*
+accounts Claude Code is not signed into — it discards their credentials on
+switch, which leaves Claude Meter the sole holder. The signed-in account is
+always read live from Claude Code and never renewed here, because refreshing
+that one would log you out of your own CLI.
+
+If an account's refresh token is spent — usually because you signed into it
+again and Claude Code rotated it — its stored credentials are dropped and it
+falls back to its last reading until you next sign in.
+
+The account driving the menu bar polls on the normal interval; the rest poll at
+a fifth of that, because each extra account multiplies requests against a
+rate-limited endpoint.
 
 ## Security
 
 The app holds a live OAuth token, so it is built to give that token nowhere to
 go:
 
-- **Memory only.** The token is read into a local variable per request. It is
-  never stored in a property, written to disk, cached, or logged, and never
-  appears in an error message.
+- **Credentials in the Keychain, nowhere else.** Tokens for accounts you have
+  added live in a Keychain item this app owns, marked
+  `AfterFirstUnlockThisDeviceOnly` so nothing syncs to iCloud or off the
+  machine. They are never written to disk in the clear, never logged, and never
+  appear in an error message. Claude Code's own credential is read fresh on
+  every request rather than cached.
 - **One destination, no redirects.** The `Authorization` header is only ever
   sent to `https://api.anthropic.com/api/oauth/usage`. The URLSession delegate
   refuses every HTTP redirect, so a redirect cannot walk the token to another
   host.
-- **Read-only.** Nothing is ever written back to the keychain. The refresh
-  token is not read and not used — refreshing is left entirely to Claude Code,
-  so this app can never invalidate your CLI session.
-- **No persistence.** An ephemeral URLSession, with cookies and both caches
-  disabled. The only thing written to disk is two UI preferences
-  (`compactBar`, `didRegisterLoginItem`).
+- **Never refreshes the account you are signed into.** That one belongs to
+  Claude Code, and refreshing it would rotate the token out from under your CLI
+  and log you out. Only accounts Claude Code has already let go of are renewed.
+- **No incidental persistence.** An ephemeral URLSession, with cookies and both
+  caches disabled. Outside the Keychain, the only things written to disk are two
+  UI preferences (`compactBar`, `didRegisterLoginItem`).
+- **A public client id, not a secret.** Renewal uses Claude Code's OAuth client
+  id. A native app authenticating with PKCE cannot hold a client secret, so this
+  value is identical in every install and is not a credential.
 - **No dependencies.** Pure Swift against system frameworks — nothing from
   SwiftPM, Homebrew, or npm, so there is no supply chain to trust.
 - **Hardened runtime.** The bundle is signed with `--options runtime`, which
@@ -152,7 +188,7 @@ binary. Click Always Allow once more.
 ## Development
 
 ```bash
-./Tests/run.sh        # 47 assertions: parsing, layout, colour bands, account switching
+./Tests/run.sh        # 76 assertions: parsing, layout, colour bands, account switching
 ./build.sh            # build only, to build/ClaudeMeter.app
 ./build.sh --install  # build, install to /Applications, launch
 ./build.sh --zip      # also produce a zip
@@ -163,6 +199,9 @@ binary. Click Always Allow once more.
 | `Sources/Usage.swift` | Keychain read, API client, response parsing, menu bar layout |
 | `Sources/UsageBarView.swift` | The chip: border, dividers, text (geometry constants at the top) |
 | `Sources/Account.swift` | Signed-in account identity and the `~/.claude.json` watcher |
+| `Sources/AccountStore.swift` | Keychain-backed store of every known account |
+| `Sources/TokenRefresh.swift` | Renewal for accounts Claude Code no longer holds |
+| `Sources/FetchPacer.swift` | Poll spacing, backoff, and which triggers may skip them |
 | `Sources/StatusController.swift` | Status item, dropdown, polling, launch-at-login |
 | `Sources/main.swift` | Entry point and single-instance guard |
 | `Tools/make-icon.swift` | Draws the app icon; `build.sh` runs it through `iconutil` |
