@@ -60,7 +60,7 @@ enum TokenRefresh {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("ClaudeMeter/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("ClaudeMeter/\(appVersion)", forHTTPHeaderField: "User-Agent")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "grant_type": "refresh_token",
             "refresh_token": refreshToken,

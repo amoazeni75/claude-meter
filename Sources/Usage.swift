@@ -356,7 +356,7 @@ final class UsageFetcher {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
             req.setValue("application/json", forHTTPHeaderField: "Accept")
-            req.setValue("ClaudeMeter/1.0", forHTTPHeaderField: "User-Agent")
+            req.setValue("ClaudeMeter/\(appVersion)", forHTTPHeaderField: "User-Agent")
 
             session.dataTask(with: req) { data, response, error in
                 if let error = error {

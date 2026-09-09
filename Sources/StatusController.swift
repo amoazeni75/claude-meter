@@ -364,6 +364,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         loginItem.state = launchAtLoginEnabled ? .on : .off
         add("Open Usage on claude.ai", #selector(actionOpenWeb))
         menu.addItem(.separator())
+
+        let version = NSMenuItem()
+        version.attributedTitle = mono("Claude Meter \(appVersion)", .tertiaryLabelColor, size: 10)
+        version.isEnabled = false
+        menu.addItem(version)
+
         add("Quit Claude Meter", #selector(actionQuit), key: "q")
     }
 
