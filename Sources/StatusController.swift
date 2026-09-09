@@ -249,7 +249,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         add("Open Usage on claude.ai", #selector(actionOpenWeb))
         menu.addItem(.separator())
-        add("Quit Claude Usage Bar", #selector(actionQuit), key: "q")
+        add("Quit Claude Meter", #selector(actionQuit), key: "q")
     }
 
     @discardableResult

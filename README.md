@@ -1,4 +1,4 @@
-# Claude Usage Bar
+# Claude Meter
 
 Your Claude usage limits, live in the macOS menu bar.
 
@@ -32,7 +32,7 @@ Click for a breakdown with reset countdowns.
  Launch at Login                                     ✓
  Open Usage on claude.ai
  ─────────────────────────────────────────────────────
- Quit Claude Usage Bar                               ⌘Q
+ Quit Claude Meter                               ⌘Q
 ```
 
 ## Install
@@ -41,8 +41,8 @@ You need macOS 13+, Claude Code installed and signed in, and Xcode or the
 Command Line Tools (`xcode-select --install`).
 
 ```bash
-git clone <this-repo> ClaudeUsageBar
-cd ClaudeUsageBar
+git clone https://github.com/amoazeni75/claude-meter.git
+cd claude-meter
 ./build.sh --install
 ```
 
@@ -143,7 +143,7 @@ binary. Click Always Allow once more.
 
 ```bash
 ./Tests/run.sh        # 39 assertions: parsing, layout, severity, account switching
-./build.sh            # build only, to build/ClaudeUsageBar.app
+./build.sh            # build only, to build/ClaudeMeter.app
 ./build.sh --install  # build, install to /Applications, launch
 ./build.sh --zip      # also produce a zip
 ```
@@ -162,9 +162,9 @@ Apple Silicon and Intel.
 ## Uninstall
 
 ```bash
-osascript -e 'quit app "ClaudeUsageBar"'
-rm -rf /Applications/ClaudeUsageBar.app
-defaults delete com.claudeusagebar.app
+osascript -e 'quit app "ClaudeMeter"'
+rm -rf /Applications/ClaudeMeter.app
+defaults delete com.claudemeter.app
 ```
 
 Removing the app also removes its login item. To revoke keychain access, delete

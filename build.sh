@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build Claude Usage Bar into a self-contained .app bundle.
+# Build Claude Meter into a self-contained .app bundle.
 #
-#   ./build.sh              build only -> build/ClaudeUsageBar.app
+#   ./build.sh              build only -> build/ClaudeMeter.app
 #   ./build.sh --install    build, install to /Applications, and launch
 #   ./build.sh --zip        build and produce a shareable zip
 #
@@ -11,8 +11,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$ROOT/build"
-APP="$BUILD/ClaudeUsageBar.app"
-NAME="ClaudeUsageBar"
+APP="$BUILD/ClaudeMeter.app"
+NAME="ClaudeMeter"
 MIN_MACOS="13.0"
 
 DO_INSTALL=0

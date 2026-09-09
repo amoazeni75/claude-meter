@@ -285,7 +285,7 @@ final class UsageFetcher {
         return URLSession(configuration: c, delegate: delegate, delegateQueue: nil)
     }()
 
-    private let queue = DispatchQueue(label: "com.claudeusagebar.fetch", qos: .utility)
+    private let queue = DispatchQueue(label: "com.claudemeter.fetch", qos: .utility)
 
     /// Completion is always delivered on the main queue.
     func fetch(completion: @escaping (Result<Snapshot, UsageError>) -> Void) {
@@ -309,7 +309,7 @@ final class UsageFetcher {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
             req.setValue("application/json", forHTTPHeaderField: "Accept")
-            req.setValue("ClaudeUsageBar/1.0", forHTTPHeaderField: "User-Agent")
+            req.setValue("ClaudeMeter/1.0", forHTTPHeaderField: "User-Agent")
 
             session.dataTask(with: req) { data, response, error in
                 if let error = error {

@@ -52,7 +52,7 @@ final class FileWatcher {
     private let onChange: () -> Void
     private var source: DispatchSourceFileSystemObject?
     private var fd: Int32 = -1
-    private let queue = DispatchQueue(label: "com.claudeusagebar.filewatch")
+    private let queue = DispatchQueue(label: "com.claudemeter.filewatch")
     private var debounce: DispatchWorkItem?
     private var stopped = false
 
