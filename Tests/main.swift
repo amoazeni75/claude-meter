@@ -210,6 +210,33 @@ do {
     check("waitRemaining reports the gap", r.waitRemaining(now: t0.addingTimeInterval(120)) == 60)
 }
 
+// -------------------------------------------------------------- updates
+
+print("\nversion comparison")
+check("plain", SemVer("1.1.0")?.description ?? "nil", "1.1.0")
+check("leading v", SemVer("v1.1.0")?.description ?? "nil", "1.1.0")
+check("short form", SemVer("v1.2")?.description ?? "nil", "1.2")
+check("junk rejected", SemVer("banana") == nil)
+check("empty rejected", SemVer("") == nil)
+check("negative rejected", SemVer("1.-2.0") == nil)
+check("1.2 equals 1.2.0", SemVer("v1.2")! == SemVer("1.2.0")!)
+// The classic sort bug: string ordering puts 1.10 before 1.9.
+check("1.10.0 beats 1.9.0", SemVer("1.9.0")! < SemVer("1.10.0")!)
+check("2.0.0 beats 1.99.99", SemVer("1.99.99")! < SemVer("2.0.0")!)
+check("prerelease suffix ignored", SemVer("1.2.0-beta.1")?.description ?? "nil", "1.2.0")
+
+check("newest of a list", newestTag(["v1.0.0", "v1.10.0", "v1.9.0", "v1.2.0"]) ?? "nil", "v1.10.0")
+check("newest ignores junk", newestTag(["nightly", "v1.1.0", "latest"]) ?? "nil", "v1.1.0")
+check("newest of nothing", newestTag(["nightly", "latest"]) == nil)
+check("newest of empty", newestTag([]) == nil)
+
+check("update offered when newer", updateAvailable(current: "1.1.0", latest: "v1.2.0"))
+check("no update when equal", !updateAvailable(current: "1.1.0", latest: "v1.1.0"))
+// A downgrade must never be auto-installed.
+check("no update when older", !updateAvailable(current: "1.2.0", latest: "v1.1.0"))
+check("no update from junk tag", !updateAvailable(current: "1.1.0", latest: "nightly"))
+check("no update from dev build", !updateAvailable(current: "dev", latest: "v1.2.0"))
+
 // -------------------------------------------------------------- account
 
 print("\naccount identity")

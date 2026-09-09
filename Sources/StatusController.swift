@@ -73,6 +73,13 @@ final class StatusController: NSObject, NSMenuDelegate {
     private var inFlight: Set<String> = []
 
     private let tickInterval: TimeInterval = 30
+
+    // Updates
+    private var latestTag: String?
+    private var updateCheckedAt: Date?
+    private var updateNote: String?
+    private var attemptedTag: String?
+    private let updateCheckInterval: TimeInterval = 6 * 3600
     /// The account on the menu bar is worth keeping current; the rest are a
     /// reference you glance at, and every extra account multiplies requests
     /// against a rate-limited endpoint.
@@ -84,6 +91,23 @@ final class StatusController: NSObject, NSMenuDelegate {
     private var compact: Bool {
         get { UserDefaults.standard.bool(forKey: "compactBar") }
         set { UserDefaults.standard.set(newValue, forKey: "compactBar"); render() }
+    }
+
+    /// On by default: the whole point of the feature is not having to
+    /// remember to pull and rebuild.
+    private var autoUpdate: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "autoUpdate") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "autoUpdate")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "autoUpdate") }
+    }
+
+    private var pendingUpdate: String? {
+        guard let latest = latestTag, updateAvailable(current: appVersion, latest: latest) else {
+            return nil
+        }
+        return latest
     }
 
     // MARK: Which account is which
@@ -129,9 +153,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         captureActive()
         tick(.scheduled)
 
+        checkForUpdates()
+
         let t = Timer(timeInterval: tickInterval, repeats: true) { [weak self] _ in
             self?.captureActive()
             self?.tick(.scheduled)
+            self?.checkForUpdates()
         }
         t.tolerance = 10
         RunLoop.main.add(t, forMode: .common)
@@ -240,6 +267,45 @@ final class StatusController: NSObject, NSMenuDelegate {
                 done(.failure(error))
             }
         }
+    }
+
+    // MARK: Updates
+
+    /// Asks GitHub for the newest tag, at most every few hours unless forced.
+    private func checkForUpdates(force: Bool = false) {
+        guard Updater.canSelfUpdate else { return }
+        if !force, let at = updateCheckedAt,
+           Date().timeIntervalSince(at) < updateCheckInterval { return }
+        updateCheckedAt = Date()
+
+        Updater.checkLatest { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let tag):
+                self.latestTag = tag
+                self.updateNote = nil
+                // Applying automatically is the point, but only once per tag
+                // per session — a build that fails must not loop.
+                if self.autoUpdate, let pending = self.pendingUpdate,
+                   pending != self.attemptedTag {
+                    self.applyUpdate(pending)
+                }
+            case .failure(let error):
+                self.updateNote = error.localizedDescription
+            }
+            if self.item.button?.window?.isVisible == true { self.rebuildMenu() }
+        }
+    }
+
+    private func applyUpdate(_ tag: String) {
+        attemptedTag = tag
+        updateNote = "Updating to \(tag)…"
+        do {
+            try Updater.applyUpdate(to: tag)
+        } catch {
+            updateNote = error.localizedDescription
+        }
+        if item.button?.window?.isVisible == true { rebuildMenu() }
     }
 
     // MARK: Menu bar
@@ -363,6 +429,30 @@ final class StatusController: NSObject, NSMenuDelegate {
         let loginItem = add("Launch at Login", #selector(actionToggleLaunchAtLogin))
         loginItem.state = launchAtLoginEnabled ? .on : .off
         add("Open Usage on claude.ai", #selector(actionOpenWeb))
+
+        if Updater.canSelfUpdate {
+            menu.addItem(.separator())
+            if let pending = pendingUpdate {
+                let mi = add("Install Update \(pending)", #selector(actionInstallUpdate))
+                mi.attributedTitle = NSAttributedString(
+                    string: "Install Update \(pending)",
+                    attributes: [
+                        .font: NSFont.menuFont(ofSize: 0),
+                        .foregroundColor: NSColor.controlAccentColor,
+                    ])
+            } else {
+                add("Check for Updates", #selector(actionCheckUpdates))
+            }
+            let auto = add("Update Automatically", #selector(actionToggleAutoUpdate))
+            auto.state = autoUpdate ? .on : .off
+            if let note = updateNote {
+                let mi = NSMenuItem()
+                mi.attributedTitle = mono("   " + note, .tertiaryLabelColor, size: 11)
+                mi.isEnabled = false
+                menu.addItem(mi)
+            }
+        }
+
         menu.addItem(.separator())
 
         let version = NSMenuItem()
@@ -517,6 +607,21 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     @objc private func actionToggleCompact() { compact.toggle() }
+
+    @objc private func actionCheckUpdates() {
+        updateNote = "Checking…"
+        checkForUpdates(force: true)
+    }
+
+    @objc private func actionInstallUpdate() {
+        guard let pending = pendingUpdate else { return }
+        applyUpdate(pending)
+    }
+
+    @objc private func actionToggleAutoUpdate() {
+        autoUpdate.toggle()
+        if autoUpdate { checkForUpdates(force: true) }
+    }
 
     @objc private func actionOpenWeb() {
         if let url = URL(string: "https://claude.ai/settings/usage") {

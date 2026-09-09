@@ -66,6 +66,21 @@ rm -rf "$BUILD/AppIcon.iconset"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
+# Record where this was built from so the app can update itself by pulling and
+# rebuilding, which is the same path people install by. Must happen before
+# signing — editing a signed bundle invalidates the signature.
+if [ -d "$ROOT/.git" ]; then
+    ORIGIN=$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)
+    ORIGIN=${ORIGIN%.git}
+    SLUG=$(printf '%s' "$ORIGIN" | sed -E 's#^.*[:/]([^/]+/[^/]+)$#\1#')
+    plist="$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :CMRepoPath string $ROOT" "$plist" >/dev/null 2>&1 \
+      || /usr/libexec/PlistBuddy -c "Set :CMRepoPath $ROOT" "$plist" >/dev/null
+    /usr/libexec/PlistBuddy -c "Add :CMRepoSlug string ${SLUG:-}" "$plist" >/dev/null 2>&1 \
+      || /usr/libexec/PlistBuddy -c "Set :CMRepoSlug ${SLUG:-}" "$plist" >/dev/null
+    echo "==> Self-update: ${SLUG:-no origin remote}"
+fi
+
 # Ad-hoc signature with the hardened runtime: blocks debugger attach and
 # library injection, which matters because this process holds an OAuth token
 # in memory. Not notarized — there is no Developer ID here — so the intended

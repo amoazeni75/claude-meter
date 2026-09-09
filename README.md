@@ -100,6 +100,26 @@ desktop app and claude.ai too, not just Claude Code.
 Polling is every 60 seconds, plus on wake from sleep and when you open the
 menu. The endpoint reports usage; it does not consume any.
 
+## Updating
+
+The app updates itself. It checks GitHub for new release tags a few times a
+day, and with **Update Automatically** on (the default) pulls and rebuilds
+without being asked. There is also **Check for Updates** and an **Install
+Update** item in the dropdown when you would rather do it by hand.
+
+Since the install path is "clone and build", so is the update path: no update
+server, no signed binary, nothing to notarise. Two rules keep that safe:
+
+- **Tags only, never the branch tip.** The app updates to published releases,
+  not to whatever happens to be on `main`.
+- **Fast-forward only, and never over local work.** If the checkout has
+  uncommitted changes the update refuses outright, and the merge is
+  `--ff-only`, so an update can never rewrite or discard commits of yours.
+
+Progress and failures go to `~/Library/Logs/ClaudeMeter-update.log`. Updating
+needs the checkout you built from to still be where it was; move it and the app
+quietly stops offering updates rather than doing something surprising.
+
 ## Multiple accounts
 
 Claude Code holds exactly one credential and overwrites it whenever you switch,
@@ -188,7 +208,7 @@ binary. Click Always Allow once more.
 ## Development
 
 ```bash
-./Tests/run.sh        # 76 assertions: parsing, layout, colour bands, account switching
+./Tests/run.sh        # 95 assertions: parsing, layout, colour bands, account switching
 ./build.sh            # build only, to build/ClaudeMeter.app
 ./build.sh --install  # build, install to /Applications, launch
 ./build.sh --zip      # also produce a zip
@@ -202,6 +222,7 @@ binary. Click Always Allow once more.
 | `Sources/AccountStore.swift` | Keychain-backed store of every known account |
 | `Sources/TokenRefresh.swift` | Renewal for accounts Claude Code no longer holds |
 | `Sources/FetchPacer.swift` | Poll spacing, backoff, and which triggers may skip them |
+| `Sources/Updater.swift` | Release checking and the pull-and-rebuild self-update |
 | `Sources/StatusController.swift` | Status item, dropdown, polling, launch-at-login |
 | `Sources/main.swift` | Entry point and single-instance guard |
 | `Tools/make-icon.swift` | Draws the app icon; `build.sh` runs it through `iconutil` |
