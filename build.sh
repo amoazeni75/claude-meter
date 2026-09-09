@@ -92,6 +92,9 @@ if [ "$DO_INSTALL" = 1 ]; then
     sleep 1
     rm -rf "$DEST/$NAME.app"
     cp -R "$APP" "$DEST/$NAME.app"
+    # Leave exactly one bundle with this identifier on disk, or LaunchServices
+    # can resolve the app to the build copy instead of the installed one.
+    rm -rf "$APP"
     open "$DEST/$NAME.app"
     echo "==> Launched. Look for the usage readout in your menu bar."
     echo "    macOS will ask once for permission to read the Claude Code"

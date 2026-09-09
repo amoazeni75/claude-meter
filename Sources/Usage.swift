@@ -48,6 +48,7 @@ enum UsageError: LocalizedError {
     case keychainFailed(OSStatus)
     case badCredentialPayload
     case unauthorized
+    case rateLimited(retryAfter: TimeInterval?)
     case http(Int)
     case network(String)
     case emptyResponse
@@ -64,6 +65,11 @@ enum UsageError: LocalizedError {
             return "Unrecognized credential format in Keychain"
         case .unauthorized:
             return "Sign-in expired — open Claude Code to refresh"
+        case .rateLimited(let after):
+            if let after = after {
+                return "Rate limited — retrying in \(Int(after.rounded()))s"
+            }
+            return "Rate limited — backing off"
         case .http(let code):
             return "Anthropic API returned HTTP \(code)"
         case .network(let m):
@@ -77,7 +83,7 @@ enum UsageError: LocalizedError {
     /// runs Claude Code (which rotates the token in the Keychain).
     var selfHealing: Bool {
         switch self {
-        case .unauthorized, .notSignedIn, .network: return true
+        case .unauthorized, .notSignedIn, .network, .rateLimited: return true
         default: return false
         }
     }
@@ -192,6 +198,21 @@ func parseTimestamp(_ raw: String?) -> Date? {
         }
     }
     return isoFractional.date(from: s) ?? isoPlain.date(from: s)
+}
+
+/// `Retry-After` is either a delay in seconds or an HTTP date. Honouring it is
+/// the difference between waiting out a 429 and extending it.
+func parseRetryAfter(_ raw: String?) -> TimeInterval? {
+    guard let v = raw?.trimmingCharacters(in: .whitespaces), !v.isEmpty else { return nil }
+    if let seconds = TimeInterval(v) { return max(0, seconds) }
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone(identifier: "GMT")
+    for format in ["EEE, dd MMM yyyy HH:mm:ss zzz", "EEEE, dd-MMM-yy HH:mm:ss zzz"] {
+        f.dateFormat = format
+        if let date = f.date(from: v) { return max(0, date.timeIntervalSinceNow) }
+    }
+    return nil
 }
 
 /// "Fable" -> "fb". Unknown names fall back to their first two letters, so a
@@ -330,6 +351,9 @@ final class UsageFetcher {
                     }
                 case 401, 403:
                     finish(.failure(.unauthorized))
+                case 429:
+                    let header = http.value(forHTTPHeaderField: "Retry-After")
+                    finish(.failure(.rateLimited(retryAfter: parseRetryAfter(header))))
                 default:
                     finish(.failure(.http(http.statusCode)))
                 }

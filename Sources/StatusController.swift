@@ -64,10 +64,22 @@ final class StatusController: NSObject, NSMenuDelegate {
     private var timer: Timer?
     private var snapshot: Snapshot?
     private var lastError: UsageError?
-    private var lastMenuRefresh: Date?
     private var inFlight = false
 
-    private let pollInterval: TimeInterval = 60
+    /// How often we *consider* fetching. The decision to actually go is
+    /// `nextFetchAt`, which lets a backoff push the next call out arbitrarily
+    /// far without needing to reschedule the timer.
+    private let tickInterval: TimeInterval = 30
+
+    /// Normal spacing between fetches. Deliberately not aggressive: this
+    /// endpoint is rate limited, opening the menu refreshes on demand anyway,
+    /// and usage does not move fast enough to justify polling harder.
+    private let basePollInterval: TimeInterval = 180
+
+    private let maxBackoff: TimeInterval = 1800
+
+    private var nextFetchAt = Date.distantPast
+    private var consecutiveFailures = 0
 
     private var compact: Bool {
         get { UserDefaults.standard.bool(forKey: "compactBar") }
@@ -99,7 +111,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         render()
         refresh()
 
-        let t = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: tickInterval, repeats: true) { [weak self] _ in
             self?.accounts.recheck()
             self?.refresh()
         }
@@ -119,8 +131,11 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: Fetching
 
+    /// Fetches only if we are past `nextFetchAt`. Every caller goes through
+    /// here, so a server-instructed wait is respected no matter what triggered
+    /// the attempt — timer, wake, menu, or the Refresh item.
     private func refresh() {
-        guard !inFlight else { return }
+        guard !inFlight, Date() >= nextFetchAt else { return }
         inFlight = true
         fetcher.fetch { [weak self] result in
             guard let self = self else { return }
@@ -129,17 +144,37 @@ final class StatusController: NSObject, NSMenuDelegate {
             case .success(let snap):
                 self.snapshot = snap
                 self.lastError = nil
+                self.consecutiveFailures = 0
+                self.nextFetchAt = Date().addingTimeInterval(self.basePollInterval)
             case .failure(let err):
                 self.lastError = err
                 // Keep the last good numbers on screen for a transient failure;
                 // drop them entirely once they can no longer be trusted.
                 if !err.selfHealing { self.snapshot = nil }
+                self.scheduleRetry(after: err)
             }
             self.render()
-            if self.menu.numberOfItems > 0, self.item.button?.window?.isVisible == true {
+            if self.item.button?.window?.isVisible == true {
                 self.rebuildMenu()
             }
         }
+    }
+
+    /// Back off on failure, and obey `Retry-After` when the server sends one.
+    /// Continuing to poll through a 429 is what turns a short rate limit into
+    /// a long one.
+    private func scheduleRetry(after error: UsageError) {
+        consecutiveFailures += 1
+        let delay: TimeInterval
+        if case .rateLimited(let retryAfter) = error {
+            // Never retry sooner than the server asked, and never sooner than
+            // a minute even if it asked for less.
+            delay = max(retryAfter ?? basePollInterval, 60)
+        } else {
+            let factor = pow(2.0, Double(min(consecutiveFailures - 1, 6)))
+            delay = min(basePollInterval * factor, maxBackoff)
+        }
+        nextFetchAt = Date().addingTimeInterval(delay)
     }
 
     // MARK: Menu bar rendering
@@ -199,11 +234,9 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         rebuildMenu()
-        // Opening the menu is a good moment to be current, but don't hammer it.
-        if lastMenuRefresh == nil || Date().timeIntervalSince(lastMenuRefresh!) > 10 {
-            lastMenuRefresh = Date()
-            refresh()
-        }
+        // Opening the menu is a good moment to be current. refresh() decides
+        // whether we are actually allowed to go yet.
+        refresh()
     }
 
     private func mono(_ s: String, _ color: NSColor = .labelColor, size: CGFloat = 12) -> NSAttributedString {
@@ -249,6 +282,9 @@ final class StatusController: NSObject, NSMenuDelegate {
             let updated = NSMenuItem()
             var status = "Updated \(agoText(snap.fetchedAt))"
             if let err = lastError { status += " · \(err.localizedDescription)" }
+            if nextFetchAt > Date() {
+                status += " · next try in \(Int(nextFetchAt.timeIntervalSinceNow.rounded()))s"
+            }
             updated.attributedTitle = mono(status, .secondaryLabelColor, size: 11)
             updated.isEnabled = false
             menu.addItem(updated)
@@ -288,6 +324,9 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     @objc private func actionRefresh() {
         accounts.recheck()
+        // A manual refresh may skip our own pacing, but not a wait the server
+        // asked for.
+        if case .rateLimited = lastError {} else { nextFetchAt = .distantPast }
         refresh()
     }
 
