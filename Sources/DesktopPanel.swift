@@ -26,7 +26,7 @@ final class DesktopPanel: NSPanel {
         // Present on every Space, and left alone by Mission Control.
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
-        let blur = NSVisualEffectView(frame: contentRect(forFrameRect: frame))
+        let blur = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
         blur.material = .hudWindow
         blur.blendingMode = .behindWindow
         blur.state = .active
@@ -34,8 +34,14 @@ final class DesktopPanel: NSPanel {
         blur.layer?.cornerRadius = 14
         blur.layer?.masksToBounds = true
         blur.autoresizingMask = [.width, .height]
-        blur.addSubview(content)
+        // hudWindow is a dark material whatever the system theme is, so the
+        // semantic label colours have to be resolved against a dark appearance
+        // or every label comes out dark-on-dark and invisible.
+        blur.appearance = NSAppearance(named: .darkAqua)
+
+        content.frame = blur.bounds
         content.autoresizingMask = [.width, .height]
+        blur.addSubview(content)
         contentView = blur
 
         applyLevel()
@@ -119,6 +125,15 @@ final class DesktopWidgetView: NSView {
 
     var rows: [Row] = []
 
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        // The panel's material is dark whatever the system theme is, so this
+        // view owns a dark appearance rather than inheriting whatever it is
+        // hosted in.
+        appearance = NSAppearance(named: .darkAqua)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
     override var isFlipped: Bool { true }
 
     var fittingHeight: CGFloat {
@@ -144,6 +159,18 @@ final class DesktopWidgetView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // Semantic colours resolve against NSAppearance.current at draw time,
+        // which is not set during an offscreen cacheDisplay and is not implied
+        // by setting `appearance`. Without this the labels come out resolved
+        // for the light theme and vanish into a dark panel.
+        if #available(macOS 11.0, *) {
+            effectiveAppearance.performAsCurrentDrawingAppearance { self.drawContent() }
+        } else {
+            drawContent()
+        }
+    }
+
+    private func drawContent() {
         let right = bounds.width - inset
         var y = inset
 

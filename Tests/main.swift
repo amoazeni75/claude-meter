@@ -299,6 +299,55 @@ do {
                          now: now) ?? "nil", "at this rate, out in 6h 0m")
 }
 
+// -------------------------------------------------------------- store format
+
+print("\nstore survives a format change")
+do {
+    let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .secondsSince1970
+    let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .secondsSince1970
+
+    // Exactly what 1.3.x wrote: no history, no notified. Synthesised Codable
+    // threw on these missing keys and emptied the store; that must not recur.
+    let oldFormat = #"""
+    {"version":1,"accounts":[{"uuid":"a","email":"x@y.z","addedAt":1700000000,
+     "accessToken":"tok","refreshToken":"ref","expiresAt":1700003600}]}
+    """#
+    if let file = try? decoder.decode(AccountsFile.self, from: Data(oldFormat.utf8)) {
+        check("an older file still decodes", file.accounts.count, 1)
+        check("identity survives", file.accounts.first?.email ?? "", "x@y.z")
+        check("credentials survive", file.accounts.first?.refreshToken ?? "", "ref")
+        check("fields added later default", file.accounts.first?.history.isEmpty == true)
+        check("and so do the alert flags", file.accounts.first?.notified.isEmpty == true)
+    } else {
+        failures += 5; print("  FAIL older file did not decode at all")
+    }
+
+    // A file with nothing but a uuid is still a usable account.
+    let minimal = #"{"accounts":[{"uuid":"b"}]}"#
+    check("a minimal account decodes",
+          (try? decoder.decode(AccountsFile.self, from: Data(minimal.utf8)))?.accounts.count ?? 0, 1)
+
+    // One unreadable entry must not take the rest with it.
+    let mixed = #"{"accounts":[{"uuid":"good"},{"nope":true},{"uuid":"alsogood"}]}"#
+    check("a bad entry is skipped, not fatal",
+          (try? decoder.decode(AccountsFile.self, from: Data(mixed.utf8)))?.accounts.count ?? 0, 2)
+
+    // Round trip.
+    var file = AccountsFile()
+    file.pinnedUUID = "a"
+    file.accounts = [StoredAccount(uuid: "a", email: "x@y.z", org: "Org", plan: "Max",
+                                   accessToken: "tok", refreshToken: "ref",
+                                   expiresAt: Date(timeIntervalSince1970: 1_700_003_600),
+                                   addedAt: Date(timeIntervalSince1970: 1_700_000_000))]
+    if let data = try? encoder.encode(file),
+       let back = try? decoder.decode(AccountsFile.self, from: data) {
+        check("round trip keeps the pin", back.pinnedUUID ?? "", "a")
+        check("round trip keeps the token", back.accounts.first?.accessToken ?? "", "tok")
+    } else {
+        failures += 2; print("  FAIL round trip")
+    }
+}
+
 // -------------------------------------------------------------- alerting
 
 print("\nalert thresholds")

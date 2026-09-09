@@ -29,6 +29,48 @@ struct StoredAccount: Codable, Equatable {
 
     var displayName: String { email ?? org ?? String(uuid.prefix(8)) }
 
+    /// Decoded by hand, tolerating absent keys.
+    ///
+    /// Synthesised Codable throws on a missing key and does NOT fall back to a
+    /// property's default value, so simply adding a field to this struct makes
+    /// every previously stored file undecodable. That silently emptied the
+    /// store once already. Anything optional here is optional on the wire too,
+    /// and a display field that fails to decode must never cost us the
+    /// credentials sitting beside it.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        uuid = try c.decode(String.self, forKey: .uuid)
+        email = try? c.decodeIfPresent(String.self, forKey: .email)
+        org = try? c.decodeIfPresent(String.self, forKey: .org)
+        plan = try? c.decodeIfPresent(String.self, forKey: .plan)
+        accessToken = try? c.decodeIfPresent(String.self, forKey: .accessToken)
+        refreshToken = try? c.decodeIfPresent(String.self, forKey: .refreshToken)
+        expiresAt = try? c.decodeIfPresent(Date.self, forKey: .expiresAt)
+        addedAt = (try? c.decodeIfPresent(Date.self, forKey: .addedAt)) as? Date ?? Date()
+        lastFetchedAt = try? c.decodeIfPresent(Date.self, forKey: .lastFetchedAt)
+        lastSnapshot = (try? c.decodeIfPresent(Snapshot.self, forKey: .lastSnapshot)) as? Snapshot
+        history = (try? c.decodeIfPresent([String: [Sample]].self, forKey: .history)) as? [String: [Sample]] ?? [:]
+        notified = (try? c.decodeIfPresent([String: Double].self, forKey: .notified)) as? [String: Double] ?? [:]
+    }
+
+    init(uuid: String, email: String?, org: String?, plan: String?,
+         accessToken: String?, refreshToken: String?, expiresAt: Date?,
+         addedAt: Date, lastFetchedAt: Date? = nil, lastSnapshot: Snapshot? = nil,
+         history: [String: [Sample]] = [:], notified: [String: Double] = [:]) {
+        self.uuid = uuid
+        self.email = email
+        self.org = org
+        self.plan = plan
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresAt = expiresAt
+        self.addedAt = addedAt
+        self.lastFetchedAt = lastFetchedAt
+        self.lastSnapshot = lastSnapshot
+        self.history = history
+        self.notified = notified
+    }
+
     /// Usable without a refresh. A minute of slack avoids racing the expiry.
     func hasLiveToken(now: Date = Date()) -> Bool {
         guard accessToken?.isEmpty == false, let exp = expiresAt else { return false }
@@ -43,6 +85,28 @@ struct AccountsFile: Codable {
     /// Which account drives the menu bar. nil means "whichever is signed in".
     var pinnedUUID: String?
     var accounts: [StoredAccount] = []
+
+    init() {}
+
+    /// Same reasoning as StoredAccount, plus: one unreadable account must not
+    /// take the others down with it, so the array is decoded element by
+    /// element rather than whole.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = (try? c.decodeIfPresent(Int.self, forKey: .version)) as? Int ?? 1
+        pinnedUUID = try? c.decodeIfPresent(String.self, forKey: .pinnedUUID)
+        if var list = try? c.nestedUnkeyedContainer(forKey: .accounts) {
+            var out: [StoredAccount] = []
+            while !list.isAtEnd {
+                if let account = try? list.decode(StoredAccount.self) {
+                    out.append(account)
+                } else {
+                    _ = try? list.decode(AnyCodable.self)   // step over the bad one
+                }
+            }
+            accounts = out
+        }
+    }
 
     /// One window that just crossed a threshold worth interrupting someone for.
     struct Alert: Equatable {
@@ -188,7 +252,18 @@ final class AccountStore {
               let data = out as? Data else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
-        return try? decoder.decode(AccountsFile.self, from: data)
+        do {
+            return try decoder.decode(AccountsFile.self, from: data)
+        } catch {
+            // Starting fresh here overwrites the only copy of every stored
+            // credential on the next save, so keep the bytes first.
+            let backup = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("ClaudeMeter-accounts-backup.json")
+            try? data.write(to: URL(fileURLWithPath: backup))
+            NSLog("ClaudeMeter: accounts unreadable (%@); raw copy at %@",
+                  String(describing: error), backup)
+            return nil
+        }
     }
 
     func save() {
@@ -215,3 +290,7 @@ final class AccountStore {
         }
     }
 }
+
+
+/// Lets a malformed array element be stepped over during decoding.
+private struct AnyCodable: Codable {}

@@ -1,63 +1,6 @@
 import Cocoa
 import ServiceManagement
 
-extension UsageLevel {
-    /// Colour for the percentage. Labels beside it stay neutral, so the only
-    /// thing carrying colour is the number the colour is about.
-    var color: NSColor {
-        switch self {
-        case .low:      return .systemGreen
-        case .moderate: return .usageYellow
-        case .high:     return .systemOrange
-        case .critical: return .systemRed
-        }
-    }
-}
-
-extension NSColor {
-    /// systemYellow is tuned for fills; as text on a light menu bar it is
-    /// close to invisible. Keep it in dark mode, darken it to a gold in light.
-    static let usageYellow = NSColor(name: "usageYellow") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? .systemYellow
-            : NSColor(srgbRed: 0.62, green: 0.47, blue: 0.02, alpha: 1)
-    }
-}
-
-private func gauge(_ percent: Double, width: Int = 12) -> String {
-    let filled = Int((percent / 100.0 * Double(width)).rounded())
-    let f = max(0, min(width, filled))
-    return String(repeating: "█", count: f) + String(repeating: "░", count: width - f)
-}
-
-private func pad(_ s: String, _ n: Int) -> String {
-    let c = s.count
-    return c >= n ? s : s + String(repeating: " ", count: n - c)
-}
-
-private func clip(_ s: String, _ n: Int) -> String {
-    s.count <= n ? s : String(s.prefix(n - 1)) + "…"
-}
-
-private func resetText(_ date: Date?) -> String {
-    guard let date = date else { return "" }
-    let secs = Int(date.timeIntervalSinceNow)
-    if secs <= 0 { return "resetting…" }
-    let h = secs / 3600, m = (secs % 3600) / 60
-    if h >= 24 { return "resets in \(h / 24)d \(h % 24)h" }
-    if h > 0 { return "resets in \(h)h \(m)m" }
-    return "resets in \(m)m"
-}
-
-func agoText(_ date: Date) -> String {
-    let s = Int(Date().timeIntervalSince(date))
-    if s < 5 { return "just now" }
-    if s < 60 { return "\(s)s ago" }
-    if s < 3600 { return "\(s / 60)m ago" }
-    if s < 86400 { return "\(s / 3600)h ago" }
-    return "\(s / 86400)d ago"
-}
-
 final class StatusController: NSObject, NSMenuDelegate {
 
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -393,28 +336,50 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// The most urgent projection across an account's windows, for the menu.
-    private func projectionNote(for account: StoredAccount) -> String? {
+    /// What to say about where this account is heading.
+    ///
+    /// A warning when a window runs out before it resets, and otherwise the
+    /// measured rate — because "nothing shown" is indistinguishable from
+    /// "feature not working", and the rate is the evidence that it is.
+    private func projectionNote(for account: StoredAccount) -> (text: String, warning: Bool)? {
         guard let snapshot = account.lastSnapshot else { return nil }
+
         var soonest: (String, Date)?
+        var fastest: (String, Double)?
         for metric in snapshot.metrics {
             guard let history = account.history[metric.kind],
                   let p = project(history: history,
                                   currentPercent: metric.percent,
-                                  resetsAt: metric.resetsAt),
-                  p.beforeReset else { continue }
-            if soonest == nil || p.exhaustsAt < soonest!.1 {
+                                  resetsAt: metric.resetsAt) else { continue }
+            if p.beforeReset, soonest == nil || p.exhaustsAt < soonest!.1 {
                 soonest = (metric.longLabel, p.exhaustsAt)
             }
+            if fastest == nil || p.ratePerHour > fastest!.1 {
+                fastest = (metric.longLabel, p.ratePerHour)
+            }
         }
-        guard let (label, at) = soonest else { return nil }
-        let seconds = at.timeIntervalSinceNow
-        guard seconds > 0 else { return "\(label) is out" }
-        let hours = Int(seconds / 3600)
-        let when = hours >= 24 ? "\(hours / 24)d \(hours % 24)h"
-            : hours >= 1 ? "\(hours)h \(Int(seconds / 60) % 60)m"
-            : "\(Int(seconds / 60))m"
-        return "At this rate, \(label.lowercased()) runs out in \(when)"
+
+        if let (label, at) = soonest {
+            let seconds = at.timeIntervalSinceNow
+            guard seconds > 0 else { return ("\(label) is out", true) }
+            let hours = Int(seconds / 3600)
+            let when = hours >= 24 ? "\(hours / 24)d \(hours % 24)h"
+                : hours >= 1 ? "\(hours)h \(Int(seconds / 60) % 60)m"
+                : "\(Int(seconds / 60))m"
+            return ("At this rate, \(label.lowercased()) runs out in \(when)", true)
+        }
+
+        if let (label, rate) = fastest {
+            return (String(format: "%@ climbing %.1f%%/h · resets first",
+                           label, rate), false)
+        }
+
+        // Not enough readings yet to fit a slope.
+        let samples = account.history.values.map(\.count).max() ?? 0
+        if samples > 0 {
+            return ("Measuring your usage rate…", false)
+        }
+        return nil
     }
 
     // MARK: Menu bar
@@ -655,7 +620,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
 
         if let note = projectionNote(for: account), !stale {
-            addView(NoteRowView("⚠︎ " + note), title: note)
+            let text = (note.warning ? "⚠︎ " : "↗ ") + note.text
+            addView(NoteRowView(text), title: text)
         }
 
         // Anything this account is struggling with sits under its own rows,
