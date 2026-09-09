@@ -159,6 +159,57 @@ check("90 -> critical",     UsageLevel.forPercent(90) == .critical)
 check("100 -> critical",    UsageLevel.forPercent(100) == .critical)
 check("over 100 -> critical", UsageLevel.forPercent(140) == .critical)
 
+// -------------------------------------------------------------- pacing
+
+print("\nfetch pacing")
+do {
+    let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    var p = FetchPacer(basePollInterval: 180, maxBackoff: 1800)
+
+    check("first fetch allowed immediately", p.allows(.scheduled, now: t0))
+
+    p.recordSuccess(now: t0)
+    check("scheduled waits out the interval", !p.allows(.scheduled, now: t0.addingTimeInterval(60)))
+    check("scheduled allowed after the interval", p.allows(.scheduled, now: t0.addingTimeInterval(180)))
+    check("menu open does not skip pacing", !p.allows(.menuOpened, now: t0.addingTimeInterval(60)))
+    check("manual skips our own pacing", p.allows(.manual, now: t0.addingTimeInterval(1)))
+    // The regression this suite exists to catch: a switch stranded behind the
+    // poll interval left the app showing nothing until the window elapsed.
+    check("account switch skips our own pacing",
+          p.allows(.accountSwitch, now: t0.addingTimeInterval(1)))
+
+    // A 429 binds everything, including the triggers that skip local pacing.
+    p.recordFailure(.rateLimited(retryAfter: 300), now: t0)
+    check("429 blocks scheduled", !p.allows(.scheduled, now: t0.addingTimeInterval(10)))
+    check("429 blocks manual", !p.allows(.manual, now: t0.addingTimeInterval(10)))
+    check("429 blocks account switch too",
+          !p.allows(.accountSwitch, now: t0.addingTimeInterval(10)))
+    check("429 honours Retry-After", p.allows(.scheduled, now: t0.addingTimeInterval(300)))
+    check("429 not yet clear before Retry-After",
+          !p.allows(.scheduled, now: t0.addingTimeInterval(299)))
+
+    var q = FetchPacer(basePollInterval: 180, maxBackoff: 1800)
+    q.recordFailure(.rateLimited(retryAfter: 5), now: t0)
+    check("Retry-After floored at 60s", !q.allows(.scheduled, now: t0.addingTimeInterval(59)))
+
+    var r = FetchPacer(basePollInterval: 180, maxBackoff: 1800)
+    r.recordFailure(.network("down"), now: t0)
+    check("first network failure waits one interval",
+          !r.allows(.scheduled, now: t0.addingTimeInterval(179)))
+    check("network failure does not block a switch",
+          r.allows(.accountSwitch, now: t0.addingTimeInterval(1)))
+    r.recordFailure(.network("down"), now: t0)
+    check("second failure doubles", !r.allows(.scheduled, now: t0.addingTimeInterval(359)))
+    for _ in 0..<12 { r.recordFailure(.network("down"), now: t0) }
+    check("backoff caps at maxBackoff", r.allows(.scheduled, now: t0.addingTimeInterval(1800)))
+
+    r.recordSuccess(now: t0)
+    check("success clears the rate-limit flag", r.allows(.manual, now: t0.addingTimeInterval(1)))
+    check("success resets the backoff", r.allows(.scheduled, now: t0.addingTimeInterval(180)))
+    check("waitRemaining nil once allowed", r.waitRemaining(now: t0.addingTimeInterval(180)) == nil)
+    check("waitRemaining reports the gap", r.waitRemaining(now: t0.addingTimeInterval(120)) == 60)
+}
+
 // -------------------------------------------------------------- account
 
 print("\naccount identity")
