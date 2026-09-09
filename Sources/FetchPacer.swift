@@ -26,7 +26,7 @@ struct FetchPacer {
         }
     }
 
-    let basePollInterval: TimeInterval
+    var basePollInterval: TimeInterval
     let maxBackoff: TimeInterval
 
     private(set) var nextAllowedAt: Date = .distantPast

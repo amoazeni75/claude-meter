@@ -35,6 +35,10 @@ private func pad(_ s: String, _ n: Int) -> String {
     return c >= n ? s : s + String(repeating: " ", count: n - c)
 }
 
+private func clip(_ s: String, _ n: Int) -> String {
+    s.count <= n ? s : String(s.prefix(n - 1)) + "…"
+}
+
 private func resetText(_ date: Date?) -> String {
     guard let date = date else { return "" }
     let secs = Int(date.timeIntervalSinceNow)
@@ -50,7 +54,8 @@ private func agoText(_ date: Date) -> String {
     if s < 5 { return "just now" }
     if s < 60 { return "\(s)s ago" }
     if s < 3600 { return "\(s / 60)m ago" }
-    return "\(s / 3600)h ago"
+    if s < 86400 { return "\(s / 3600)h ago" }
+    return "\(s / 86400)d ago"
 }
 
 final class StatusController: NSObject, NSMenuDelegate {
@@ -59,24 +64,42 @@ final class StatusController: NSObject, NSMenuDelegate {
     private let barView = UsageBarView()
     private let fetcher = UsageFetcher()
     private let accounts = AccountWatcher()
+    private let store = AccountStore()
     private let menu = NSMenu()
 
     private var timer: Timer?
-    private var snapshot: Snapshot?
-    private var lastError: UsageError?
-    private var inFlight = false
+    private var pacers: [String: FetchPacer] = [:]
+    private var errors: [String: UsageError] = [:]
+    private var inFlight: Set<String> = []
 
-    /// How often we *consider* fetching. Whether we actually go is the pacer's
-    /// decision, which lets a backoff push the next call out arbitrarily far
-    /// without rescheduling the timer.
     private let tickInterval: TimeInterval = 30
-
-    /// Spacing, backoff and the rules about which triggers may skip them.
-    private var pacer = FetchPacer(basePollInterval: 180, maxBackoff: 1800)
+    /// The account on the menu bar is worth keeping current; the rest are a
+    /// reference you glance at, and every extra account multiplies requests
+    /// against a rate-limited endpoint.
+    private let foregroundInterval: TimeInterval = 180
+    private let backgroundInterval: TimeInterval = 900
+    /// Beyond this a reading is shown with its age rather than as current.
+    private let freshFor: TimeInterval = 420
 
     private var compact: Bool {
         get { UserDefaults.standard.bool(forKey: "compactBar") }
         set { UserDefaults.standard.set(newValue, forKey: "compactBar"); render() }
+    }
+
+    // MARK: Which account is which
+
+    /// The account Claude Code is signed into. Its token is always read live
+    /// and is never refreshed by us.
+    private var activeUUID: String? { accounts.current?.uuid }
+
+    /// The account whose numbers appear in the menu bar.
+    private var displayedUUID: String? { store.pinnedUUID ?? activeUUID }
+
+    private var displayed: StoredAccount? { displayedUUID.flatMap { store.account($0) } }
+
+    private func isFresh(_ account: StoredAccount) -> Bool {
+        guard let at = account.lastFetchedAt else { return false }
+        return Date().timeIntervalSince(at) < freshFor
     }
 
     // MARK: Lifecycle
@@ -93,118 +116,176 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         accounts.onSwitch = { [weak self] _ in
             guard let self = self else { return }
-            // Different account: the numbers on screen belong to someone else,
-            // so drop them rather than let them sit there looking current.
-            self.snapshot = nil
-            self.lastError = nil
+            // The signed-in account changed. Capture its credentials and, if
+            // the bar is following the signed-in account, get its numbers now
+            // rather than at the next scheduled poll.
+            self.captureActive()
             self.render()
-            // A switch is not a retry — it must not be held behind the normal
-            // polling interval. (A 429 still binds it; the pacer decides.)
-            self.refresh(.accountSwitch)
+            self.tick(.accountSwitch)
         }
 
         enableLaunchAtLoginOnFirstRun()
         render()
-        refresh(.scheduled)
+        captureActive()
+        tick(.scheduled)
 
         let t = Timer(timeInterval: tickInterval, repeats: true) { [weak self] _ in
-            self?.accounts.recheck()
-            self?.refresh(.scheduled)
+            self?.captureActive()
+            self?.tick(.scheduled)
         }
         t.tolerance = 10
         RunLoop.main.add(t, forMode: .common)
         timer = t
 
-        // Anything that suspends the timer or invalidates the numbers.
         let wc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
             wc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.accounts.recheck()
-                self?.refresh(.wake)
+                self?.captureActive()
+                self?.tick(.wake)
+            }
+        }
+    }
+
+    // MARK: Capture
+
+    /// Mirrors Claude Code's current credential into our store, so this account
+    /// stays queryable once the user signs into a different one.
+    private func captureActive() {
+        accounts.recheck()
+        guard let identity = accounts.current, let uuid = identity.uuid else { return }
+        // The Keychain read can block on a prompt; keep it off the main thread.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let current = try? Credentials.loadCurrent() else { return }
+            DispatchQueue.main.async {
+                self?.store.upsert(uuid: uuid,
+                                   email: identity.email,
+                                   org: identity.organization,
+                                   plan: identity.plan ?? current.subscriptionType?.capitalized,
+                                   accessToken: current.accessToken,
+                                   refreshToken: current.refreshToken,
+                                   expiresAt: current.expiresAt)
             }
         }
     }
 
     // MARK: Fetching
 
-    /// Fetches only if we are past `nextFetchAt`. Every caller goes through
-    /// here, so a server-instructed wait is respected no matter what triggered
-    /// the attempt — timer, wake, menu, or the Refresh item.
-    private func refresh(_ trigger: FetchPacer.Trigger) {
-        // The account can change between polls, and the header must never name
-        // one account while the numbers belong to another.
-        accounts.recheck()
-        guard !inFlight, pacer.allows(trigger) else { return }
-        inFlight = true
-        fetcher.fetch { [weak self] result in
+    private func tick(_ trigger: FetchPacer.Trigger) {
+        let displayedID = displayedUUID
+        for account in store.accounts {
+            let foreground = account.uuid == displayedID
+            var pacer = pacers[account.uuid]
+                ?? FetchPacer(basePollInterval: foregroundInterval, maxBackoff: 1800)
+            pacer.basePollInterval = foreground ? foregroundInterval : backgroundInterval
+            pacers[account.uuid] = pacer
+            guard pacer.allows(trigger) else { continue }
+            fetch(account)
+        }
+    }
+
+    private func fetch(_ account: StoredAccount) {
+        let uuid = account.uuid
+        guard inFlight.insert(uuid).inserted else { return }
+
+        let done: (Result<Snapshot, UsageError>) -> Void = { [weak self] result in
             guard let self = self else { return }
-            self.inFlight = false
+            self.inFlight.remove(uuid)
+            var pacer = self.pacers[uuid] ?? FetchPacer(basePollInterval: self.foregroundInterval)
             switch result {
-            case .success(let snap):
-                self.snapshot = snap
-                self.lastError = nil
-                self.pacer.recordSuccess()
-            case .failure(let err):
-                self.lastError = err
-                // Keep the last good numbers on screen for a transient failure;
-                // drop them entirely once they can no longer be trusted.
-                if !err.selfHealing { self.snapshot = nil }
-                self.pacer.recordFailure(err)
+            case .success(let snapshot):
+                self.store.recordSnapshot(snapshot, for: uuid)
+                self.errors[uuid] = nil
+                pacer.recordSuccess()
+            case .failure(let error):
+                self.errors[uuid] = error
+                pacer.recordFailure(error)
             }
+            self.pacers[uuid] = pacer
             self.render()
-            if self.item.button?.window?.isVisible == true {
-                self.rebuildMenu()
+            if self.item.button?.window?.isVisible == true { self.rebuildMenu() }
+        }
+
+        // The signed-in account: always Claude Code's live token. We neither
+        // use our stored copy nor refresh it — refreshing rotates the token
+        // and would log the user out of their CLI.
+        if uuid == activeUUID {
+            fetcher.fetch(completion: done)
+            return
+        }
+
+        if account.hasLiveToken(), let token = account.accessToken {
+            fetcher.fetch(token: token, completion: done)
+            return
+        }
+
+        // Expired, and this account is not the signed-in one, so Claude Code no
+        // longer holds its credentials and we are the only holder. Safe to renew.
+        guard let refreshToken = account.refreshToken else {
+            done(.failure(.unauthorized))
+            return
+        }
+        TokenRefresh.renew(refreshToken: refreshToken) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let renewed):
+                self.store.upsert(uuid: uuid,
+                                  accessToken: renewed.accessToken,
+                                  refreshToken: renewed.refreshToken,
+                                  expiresAt: renewed.expiresAt)
+                self.fetcher.fetch(token: renewed.accessToken, completion: done)
+            case .failure(let error):
+                // A spent refresh token can't be recovered from here; the user
+                // has to sign into that account again for us to re-capture it.
+                if case .unauthorized = error { self.store.forgetCredentials(uuid) }
+                done(.failure(error))
             }
         }
     }
 
-    // MARK: Menu bar rendering
+    // MARK: Menu bar
 
     private func render() {
         guard let button = item.button else { return }
         var groups: [[UsageBarView.Run]] = []
 
-        if let snap = snapshot {
-            // Labels are all the same neutral colour; only the percentages are
-            // tinted, by their own band. The colour then means one thing —
-            // how full that particular window is — instead of also being part
-            // of how the label is styled.
-            let stale = lastError != nil
-            groups = barSegments(snap, compact: compact).map { seg in
+        if let account = displayed, let snapshot = account.lastSnapshot {
+            let stale = !isFresh(account)
+            groups = barSegments(snapshot, compact: compact).map { segment in
                 var runs: [UsageBarView.Run] = []
-                if let label = seg.label {
+                if let label = segment.label {
                     runs.append(UsageBarView.Run(
                         text: label,
                         color: stale ? .tertiaryLabelColor : .secondaryLabelColor))
                 }
                 runs.append(UsageBarView.Run(
-                    text: seg.value,
-                    color: stale ? .tertiaryLabelColor : seg.level.color))
+                    text: segment.value,
+                    color: stale ? .tertiaryLabelColor : segment.level.color))
                 return runs
             }
-            button.toolTip = snap.metrics
+            var tip = account.displayName
+            if stale, let at = account.lastFetchedAt { tip += " · \(agoText(at))" }
+            tip += "\n" + snapshot.metrics
                 .map { "\($0.longLabel): \(Int($0.percent.rounded()))%" }
                 .joined(separator: "\n")
-        } else if let err = lastError {
+            button.toolTip = tip
+        } else if let error = displayedUUID.flatMap({ errors[$0] }) ?? errors.values.first {
             let short: String
-            switch err {
+            switch error {
             case .notSignedIn:    short = "claude: sign in"
             case .unauthorized:   short = "claude: auth"
             case .keychainDenied: short = "claude: keychain"
-            default:              short = "claude \u{2014}"
+            case .rateLimited:    short = "claude: wait"
+            default:              short = "claude —"
             }
             groups = [[UsageBarView.Run(text: short, color: .secondaryLabelColor)]]
-            button.toolTip = err.localizedDescription
+            button.toolTip = error.localizedDescription
         } else {
-            groups = [[UsageBarView.Run(text: "claude \u{2026}", color: .secondaryLabelColor)]]
-            button.toolTip = "Loading Claude usage\u{2026}"
+            groups = [[UsageBarView.Run(text: "claude …", color: .secondaryLabelColor)]]
+            button.toolTip = "Loading Claude usage…"
         }
 
-        // The custom view owns the whole readout, so the button must not also
-        // draw a title of its own.
         button.title = ""
         button.image = nil
-
         barView.setGroups(groups)
         item.length = barView.fittingWidth
         let height = button.bounds.height > 0 ? button.bounds.height : NSStatusBar.system.thickness
@@ -214,13 +295,9 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: Dropdown
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        // Re-read who we are signed in as before drawing the header, so the
-        // account shown is never a tick behind what you just did in the CLI.
         accounts.recheck()
         rebuildMenu()
-        // Opening the menu is a good moment to be current; the pacer decides
-        // whether we are actually allowed to go yet.
-        refresh(.menuOpened)
+        tick(.menuOpened)
     }
 
     private func mono(_ s: String, _ color: NSColor = .labelColor, size: CGFloat = 12) -> NSAttributedString {
@@ -233,63 +310,125 @@ final class StatusController: NSObject, NSMenuDelegate {
     private func rebuildMenu() {
         menu.removeAllItems()
 
-        // Header: whose usage this is.
-        let acct = accounts.current
+        let all = store.accounts
+        let activeID = activeUUID
+        let displayedID = displayedUUID
+
+        // --- Accounts -------------------------------------------------------
         let header = NSMenuItem()
-        let who = acct?.displayName ?? "Not signed in"
-        let plan = acct?.plan.map { " · \($0)" } ?? ""
-        header.attributedTitle = mono("\(who)\(plan)", .secondaryLabelColor, size: 11)
+        header.attributedTitle = mono(all.count > 1 ? "ACCOUNTS" : "ACCOUNT",
+                                      .tertiaryLabelColor, size: 10)
         header.isEnabled = false
         menu.addItem(header)
+
+        if all.isEmpty {
+            let mi = NSMenuItem()
+            mi.attributedTitle = mono("Not signed in — run `claude`", .secondaryLabelColor, size: 11)
+            mi.isEnabled = false
+            menu.addItem(mi)
+        }
+
+        for account in all {
+            let mi = NSMenuItem(title: "", action: #selector(actionSelectAccount(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = account.uuid
+            mi.state = account.uuid == displayedID ? .on : .off
+
+            var line = pad(clip(account.displayName, 26), 27)
+            if let snapshot = account.lastSnapshot {
+                line += barText(snapshot, compact: true)
+            } else {
+                line += "—"
+            }
+            let status: String
+            if account.uuid == activeID {
+                status = "signed in"
+            } else if let at = account.lastFetchedAt {
+                status = agoText(at)
+            } else {
+                status = "no data"
+            }
+            line = pad(line, 44) + status
+
+            let s = NSMutableAttributedString(attributedString: mono(line))
+            // Grey anything that is not current, so a stale row can't be
+            // mistaken for a live one.
+            if !isFresh(account) {
+                s.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor,
+                               range: NSRange(location: 0, length: s.length))
+            }
+            mi.attributedTitle = s
+            mi.isEnabled = true
+            menu.addItem(mi)
+        }
+
         menu.addItem(.separator())
 
-        if let snap = snapshot {
-            for m in snap.metrics {
+        // --- The displayed account's detail ---------------------------------
+        if let account = displayed, let snapshot = account.lastSnapshot {
+            for metric in snapshot.metrics {
                 let mi = NSMenuItem()
-                let line = "\(pad(m.longLabel, 21))\(gauge(m.percent)) "
-                    + String(format: "%3d%%", Int(m.percent.rounded()))
-                    + "   \(resetText(m.resetsAt))"
+                let line = "\(pad(metric.longLabel, 21))\(gauge(metric.percent)) "
+                    + String(format: "%3d%%", Int(metric.percent.rounded()))
+                    + "   \(resetText(metric.resetsAt))"
                 let s = NSMutableAttributedString(attributedString: mono(line))
-                // Tint just the gauge + number by that metric's own band.
-                let gaugeStart = 21
-                let gaugeLen = min(12 + 6, max(0, s.length - gaugeStart))
-                if gaugeLen > 0 {
-                    s.addAttribute(.foregroundColor, value: m.level.color,
-                                   range: NSRange(location: gaugeStart, length: gaugeLen))
+                let start = 21
+                let length = min(18, max(0, s.length - start))
+                if length > 0 {
+                    s.addAttribute(.foregroundColor, value: metric.level.color,
+                                   range: NSRange(location: start, length: length))
                 }
                 mi.attributedTitle = s
                 mi.isEnabled = false
                 menu.addItem(mi)
             }
-            menu.addItem(.separator())
 
-            let updated = NSMenuItem()
-            var status = "Updated \(agoText(snap.fetchedAt))"
-            if let err = lastError { status += " · \(err.localizedDescription)" }
-            if let wait = pacer.waitRemaining() {
-                status += " · next try in \(Int(wait.rounded()))s"
+            let status = NSMenuItem()
+            var text = "Updated \(agoText(snapshot.fetchedAt))"
+            if let error = errors[account.uuid] { text += " · \(error.localizedDescription)" }
+            if let wait = pacers[account.uuid]?.waitRemaining() {
+                text += " · next try in \(Int(wait.rounded()))s"
             }
-            updated.attributedTitle = mono(status, .secondaryLabelColor, size: 11)
-            updated.isEnabled = false
-            menu.addItem(updated)
+            status.attributedTitle = mono(text, .secondaryLabelColor, size: 11)
+            status.isEnabled = false
+            menu.addItem(status)
         } else {
             let mi = NSMenuItem()
-            let text = lastError?.localizedDescription ?? "Loading…"
+            let text = displayedUUID.flatMap { errors[$0]?.localizedDescription } ?? "Loading…"
             mi.attributedTitle = mono(text, .secondaryLabelColor, size: 11)
             mi.isEnabled = false
             menu.addItem(mi)
-            menu.addItem(.separator())
         }
 
-        add("Refresh Now", #selector(actionRefresh), key: "r")
         menu.addItem(.separator())
+        add("Refresh Now", #selector(actionRefresh), key: "r")
 
+        if all.count > 1 || store.pinnedUUID != nil {
+            let follow = add("Follow Signed-in Account", #selector(actionFollowActive))
+            follow.state = store.pinnedUUID == nil ? .on : .off
+        }
+
+        // --- Adding and removing --------------------------------------------
+        add("Add Another Account…", #selector(actionAddAccount))
+        if !all.isEmpty {
+            let remove = NSMenuItem(title: "Forget Account", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for account in all {
+                let mi = NSMenuItem(title: account.displayName,
+                                    action: #selector(actionForget(_:)), keyEquivalent: "")
+                mi.target = self
+                mi.representedObject = account.uuid
+                sub.addItem(mi)
+            }
+            remove.submenu = sub
+            menu.addItem(remove)
+        }
+
+        menu.addItem(.separator())
         let compactItem = add("Compact Menu Bar", #selector(actionToggleCompact))
         compactItem.state = compact ? .on : .off
-
         let loginItem = add("Launch at Login", #selector(actionToggleLaunchAtLogin))
         loginItem.state = launchAtLoginEnabled ? .on : .off
-
         add("Open Usage on claude.ai", #selector(actionOpenWeb))
         menu.addItem(.separator())
         add("Quit Claude Meter", #selector(actionQuit), key: "q")
@@ -307,14 +446,58 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: Actions
 
     @objc private func actionRefresh() {
-        // A manual refresh may skip our own pacing, but not a wait the server
-        // asked for. The pacer enforces both.
-        refresh(.manual)
+        captureActive()
+        tick(.manual)
     }
 
-    @objc private func actionToggleCompact() {
-        compact.toggle()
+    @objc private func actionSelectAccount(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        // Pinning the signed-in account is the same as following it.
+        store.pinnedUUID = (uuid == activeUUID) ? nil : uuid
+        render()
+        tick(.manual)
     }
+
+    @objc private func actionFollowActive() {
+        store.pinnedUUID = nil
+        render()
+        tick(.manual)
+    }
+
+    @objc private func actionForget(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        store.remove(uuid)
+        pacers[uuid] = nil
+        errors[uuid] = nil
+        render()
+    }
+
+    /// Adding an account means signing into it in Claude Code once; we capture
+    /// its credentials the moment it becomes the signed-in account.
+    @objc private func actionAddAccount() {
+        let alert = NSAlert()
+        alert.messageText = "Add another account"
+        alert.informativeText = """
+        Claude Meter reads whichever account Claude Code is signed into, so to \
+        track another one, sign into it once:
+
+            claude auth login
+
+        Claude Meter picks it up within a few seconds and keeps it up to date \
+        from then on, even after you switch back.
+        """
+        alert.addButton(withTitle: "Open Terminal")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            let script = "tell application \"Terminal\" to do script \"claude auth login\""
+            if let apple = NSAppleScript(source: "tell application \"Terminal\" to activate\n\(script)") {
+                apple.executeAndReturnError(nil)
+            }
+        }
+    }
+
+    @objc private func actionToggleCompact() { compact.toggle() }
 
     @objc private func actionOpenWeb() {
         if let url = URL(string: "https://claude.ai/settings/usage") {
@@ -322,9 +505,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    @objc private func actionQuit() {
-        NSApp.terminate(nil)
-    }
+    @objc private func actionQuit() { NSApp.terminate(nil) }
 
     // MARK: Launch at login
 
@@ -335,23 +516,16 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     @objc private func actionToggleLaunchAtLogin() {
         guard #available(macOS 13.0, *) else { return }
-        let svc = SMAppService.mainApp
+        let service = SMAppService.mainApp
         do {
-            if svc.status == .enabled {
-                try svc.unregister()
-            } else {
-                try svc.register()
-            }
+            if service.status == .enabled { try service.unregister() } else { try service.register() }
         } catch {
-            // Most often: the user has to approve it in System Settings.
             if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
                 NSWorkspace.shared.open(url)
             }
         }
     }
 
-    /// The app is meant to be always-on, so register the login item the first
-    /// time it runs. Only once — after that the menu toggle is authoritative.
     private func enableLaunchAtLoginOnFirstRun() {
         guard #available(macOS 13.0, *) else { return }
         let key = "didRegisterLoginItem"

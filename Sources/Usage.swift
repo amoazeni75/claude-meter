@@ -8,7 +8,7 @@ import Security
 /// Derived from the percentage alone rather than from the `severity` the API
 /// also sends, so that the same number always reads as the same colour and the
 /// bands stay where they are documented to be.
-enum UsageLevel: String {
+enum UsageLevel: String, Codable {
     case low        // under 50%
     case moderate   // 50–75%
     case high       // 75–90%
@@ -26,7 +26,7 @@ enum UsageLevel: String {
 
 // MARK: - Model
 
-struct Metric {
+struct Metric: Codable, Equatable {
     let kind: String        // "session" | "weekly_all" | "weekly_scoped"
     let shortLabel: String  // "5h" | "wk" | "fb"
     let longLabel: String   // "Session (5h)" | "Weekly (all models)" | "Weekly · Fable"
@@ -35,7 +35,7 @@ struct Metric {
     let resetsAt: Date?
 }
 
-struct Snapshot {
+struct Snapshot: Codable, Equatable {
     let metrics: [Metric]
     let fetchedAt: Date
 }
@@ -102,7 +102,19 @@ enum UsageError: LocalizedError {
 enum Credentials {
     static let service = "Claude Code-credentials"
 
+    /// Everything Claude Code stores for the account it is signed into.
+    struct Current {
+        let accessToken: String
+        let refreshToken: String?
+        let expiresAt: Date?
+        let subscriptionType: String?
+    }
+
     static func loadAccessToken() throws -> String {
+        try loadCurrent().accessToken
+    }
+
+    static func loadCurrent() throws -> Current {
         // Query by service only. macOS presents its own ACL prompt the first
         // time, because this item belongs to the `claude` binary.
         let query: [String: Any] = [
@@ -135,7 +147,14 @@ enum Credentials {
         else {
             throw UsageError.badCredentialPayload
         }
-        return token
+        // expiresAt is milliseconds since the epoch.
+        let expiry = (oauth["expiresAt"] as? Double).map {
+            Date(timeIntervalSince1970: $0 / 1000)
+        }
+        return Current(accessToken: token,
+                       refreshToken: oauth["refreshToken"] as? String,
+                       expiresAt: expiry,
+                       subscriptionType: oauth["subscriptionType"] as? String)
     }
 }
 
@@ -304,14 +323,14 @@ final class UsageFetcher {
 
     private let queue = DispatchQueue(label: "com.claudemeter.fetch", qos: .utility)
 
-    /// Completion is always delivered on the main queue.
+    /// Fetches using whatever token Claude Code currently holds. Completion is
+    /// always delivered on the main queue.
     func fetch(completion: @escaping (Result<Snapshot, UsageError>) -> Void) {
         let finish: (Result<Snapshot, UsageError>) -> Void = { r in
             DispatchQueue.main.async { completion(r) }
         }
-
         // The Keychain read can block on a user prompt, so keep it off the main thread.
-        queue.async { [session] in
+        queue.async { [weak self] in
             let token: String
             do {
                 token = try Credentials.loadAccessToken()
@@ -320,7 +339,18 @@ final class UsageFetcher {
             } catch {
                 finish(.failure(.badCredentialPayload)); return
             }
+            self?.fetch(token: token, completion: completion)
+        }
+    }
 
+    /// Fetches for one specific account's token. Completion is always
+    /// delivered on the main queue.
+    func fetch(token: String, completion: @escaping (Result<Snapshot, UsageError>) -> Void) {
+        let finish: (Result<Snapshot, UsageError>) -> Void = { r in
+            DispatchQueue.main.async { completion(r) }
+        }
+
+        queue.async { [session] in
             var req = URLRequest(url: UsageFetcher.endpoint)
             req.httpMethod = "GET"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
