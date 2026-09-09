@@ -21,6 +21,12 @@ struct StoredAccount: Codable, Equatable {
     var lastFetchedAt: Date?
     var lastSnapshot: Snapshot?
 
+    /// Readings per window kind, feeding the burn-rate projection.
+    var history: [String: [Sample]] = [:]
+    /// Highest threshold already announced for each window, cleared when the
+    /// window rolls over so the next cycle can alert again.
+    var notified: [String: Double] = [:]
+
     var displayName: String { email ?? org ?? String(uuid.prefix(8)) }
 
     /// Usable without a refresh. A minute of slack avoids racing the expiry.
@@ -37,6 +43,50 @@ struct AccountsFile: Codable {
     /// Which account drives the menu bar. nil means "whichever is signed in".
     var pinnedUUID: String?
     var accounts: [StoredAccount] = []
+
+    /// One window that just crossed a threshold worth interrupting someone for.
+    struct Alert: Equatable {
+        let kind: String
+        let label: String
+        let percent: Double
+        let threshold: Double
+    }
+
+    /// Files a reading and reports what is worth announcing.
+    ///
+    /// Kept pure and on the file rather than the store so the alerting rule —
+    /// the part that can wake someone up — is testable without a Keychain.
+    mutating func record(_ snapshot: Snapshot, for uuid: String) -> [Alert] {
+        guard let i = accounts.firstIndex(where: { $0.uuid == uuid }) else { return [] }
+        var account = accounts[i]
+        var alerts: [Alert] = []
+
+        for metric in snapshot.metrics {
+            let previous = account.lastSnapshot?.metrics
+                .first { $0.kind == metric.kind }?.percent
+
+            if let previous = previous,
+               resetsNotifications(previousPercent: previous, currentPercent: metric.percent) {
+                account.notified[metric.kind] = nil
+            }
+
+            if let hit = thresholdCrossed(percent: metric.percent,
+                                          alreadyNotified: account.notified[metric.kind]) {
+                account.notified[metric.kind] = hit
+                alerts.append(Alert(kind: metric.kind, label: metric.longLabel,
+                                    percent: metric.percent, threshold: hit))
+            }
+
+            account.history[metric.kind] = HistoryPolicy.append(
+                Sample(at: snapshot.fetchedAt, percent: metric.percent),
+                to: account.history[metric.kind] ?? [])
+        }
+
+        account.lastSnapshot = snapshot
+        account.lastFetchedAt = snapshot.fetchedAt
+        accounts[i] = account
+        return alerts
+    }
 }
 
 /// Persists accounts in a Keychain item this app owns.
@@ -100,11 +150,12 @@ final class AccountStore {
         save()
     }
 
-    func recordSnapshot(_ snapshot: Snapshot, for uuid: String) {
-        guard let i = file.accounts.firstIndex(where: { $0.uuid == uuid }) else { return }
-        file.accounts[i].lastSnapshot = snapshot
-        file.accounts[i].lastFetchedAt = snapshot.fetchedAt
+    /// Returns the windows that just crossed an alert threshold.
+    @discardableResult
+    func recordSnapshot(_ snapshot: Snapshot, for uuid: String) -> [AccountsFile.Alert] {
+        let alerts = file.record(snapshot, for: uuid)
         save()
+        return alerts
     }
 
     func remove(_ uuid: String) {

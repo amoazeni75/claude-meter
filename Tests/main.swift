@@ -15,6 +15,10 @@ func check(_ label: String, _ actual: String, _ expected: String) {
     }
 }
 
+func check(_ label: String, _ actual: Int, _ expected: Int) {
+    check(label, String(actual), String(expected))
+}
+
 func check(_ label: String, _ condition: Bool) {
     checks += 1
     if condition { print("  ok   \(label)") }
@@ -208,6 +212,151 @@ do {
     check("success resets the backoff", r.allows(.scheduled, now: t0.addingTimeInterval(180)))
     check("waitRemaining nil once allowed", r.waitRemaining(now: t0.addingTimeInterval(180)) == nil)
     check("waitRemaining reports the gap", r.waitRemaining(now: t0.addingTimeInterval(120)) == 60)
+}
+
+// -------------------------------------------------------------- projection
+
+print("\nhistory keeping")
+do {
+    let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    func at(_ h: Double, _ p: Double) -> Sample {
+        Sample(at: t0.addingTimeInterval(h * 3600), percent: p)
+    }
+
+    var h: [Sample] = []
+    h = HistoryPolicy.append(at(0, 10), to: h)
+    check("first sample kept", h.count == 1)
+    h = HistoryPolicy.append(at(0.1, 11), to: h)
+    check("too soon is dropped", h.count == 1)
+    h = HistoryPolicy.append(at(0.6, 14), to: h)
+    check("past the spacing is kept", h.count == 2)
+    // A reset must land immediately or the old window pollutes the fit.
+    h = HistoryPolicy.append(at(0.7, 2), to: h)
+    check("a reset is kept regardless of spacing", h.count == 3)
+
+    var big: [Sample] = []
+    for i in 0..<250 { big = HistoryPolicy.append(at(Double(i), 50), to: big) }
+    check("history is capped", big.count == HistoryPolicy.maximumSamples)
+    check("the cap drops the oldest", big.first!.at > t0)
+
+    let spanning = [at(0, 80), at(1, 90), at(2, 5), at(3, 12)]
+    check("current window starts after the reset",
+          HistoryPolicy.currentWindow(spanning).count == 2)
+    check("no reset means the whole history",
+          HistoryPolicy.currentWindow([at(0, 5), at(1, 9)]).count == 2)
+    check("one sample survives", HistoryPolicy.currentWindow([at(0, 5)]).count == 1)
+}
+
+print("\nburn-rate projection")
+do {
+    let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    func at(_ h: Double, _ p: Double) -> Sample {
+        Sample(at: t0.addingTimeInterval(h * 3600), percent: p)
+    }
+    let now = t0.addingTimeInterval(4 * 3600)
+
+    check("nothing from a single sample",
+          project(history: [at(0, 10)], currentPercent: 10, resetsAt: nil, now: now) == nil)
+    check("nothing from too short a span",
+          project(history: [at(3.8, 10), at(3.9, 11)], currentPercent: 11,
+                  resetsAt: nil, now: now) == nil)
+    check("nothing when already full",
+          project(history: [at(0, 90), at(2, 100)], currentPercent: 100,
+                  resetsAt: nil, now: now) == nil)
+    check("nothing when flat",
+          project(history: [at(0, 40), at(2, 40)], currentPercent: 40,
+                  resetsAt: nil, now: now) == nil)
+    check("nothing when falling",
+          project(history: [at(0, 60), at(2, 40)], currentPercent: 40,
+                  resetsAt: nil, now: now) == nil)
+
+    // 10 points an hour, at 40% with 4 hours in hand.
+    let steady = [at(0, 0), at(1, 10), at(2, 20), at(3, 30), at(4, 40)]
+    let p = project(history: steady, currentPercent: 40, resetsAt: nil, now: now)
+    check("rate recovered", p.map { Int($0.ratePerHour.rounded()) } ?? -1, 10)
+    let hoursOut = p.map { Int(($0.exhaustsAt.timeIntervalSince(now) / 3600).rounded()) } ?? -1
+    check("exhaustion six hours out", "\(hoursOut)", "6")
+
+    let early = t0.addingTimeInterval(7 * 3600)     // reset before we run out
+    let late = t0.addingTimeInterval(40 * 3600)     // reset after
+    check("reset before exhaustion is not a warning",
+          project(history: steady, currentPercent: 40, resetsAt: early, now: now)?.beforeReset == false)
+    check("exhaustion before reset is a warning",
+          project(history: steady, currentPercent: 40, resetsAt: late, now: now)?.beforeReset == true)
+
+    // Only the current window should feed the fit.
+    let acrossReset = [at(0, 70), at(1, 85), at(2, 5), at(3, 10), at(4, 15)]
+    let p2 = project(history: acrossReset, currentPercent: 15, resetsAt: late, now: now)
+    check("the fit ignores the previous window",
+          p2.map { Int($0.ratePerHour.rounded()) } ?? -1, 5)
+
+    check("no text without a warning", projectionText(nil) == nil)
+    check("no text when the reset wins",
+          projectionText(project(history: steady, currentPercent: 40, resetsAt: early, now: now),
+                         now: now) == nil)
+    check("text when it matters",
+          projectionText(project(history: steady, currentPercent: 40, resetsAt: late, now: now),
+                         now: now) ?? "nil", "at this rate, out in 6h 0m")
+}
+
+// -------------------------------------------------------------- alerting
+
+print("\nalert thresholds")
+check("silent below the first", thresholdCrossed(percent: 40, alreadyNotified: nil) == nil)
+check("fires at 50", Int(thresholdCrossed(percent: 50, alreadyNotified: nil) ?? -1), 50)
+check("fires at 75 after 50", Int(thresholdCrossed(percent: 80, alreadyNotified: 50) ?? -1), 75)
+// A jump past several thresholds is one alert about the highest, not three.
+check("a jump alerts once, highest",
+      Int(thresholdCrossed(percent: 95, alreadyNotified: nil) ?? -1), 90)
+check("silent while sitting above one already announced",
+      thresholdCrossed(percent: 91, alreadyNotified: 90) == nil)
+check("silent at exactly the announced threshold",
+      thresholdCrossed(percent: 90, alreadyNotified: 90) == nil)
+check("100 still announces 90 once",
+      Int(thresholdCrossed(percent: 100, alreadyNotified: 75) ?? -1), 90)
+check("a rollover is a reset", resetsNotifications(previousPercent: 92, currentPercent: 3))
+check("a small dip is not a reset",
+      !resetsNotifications(previousPercent: 92, currentPercent: 90))
+
+print("\nrecording a reading")
+do {
+    let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    func snap(_ percent: Double, _ at: Date) -> Snapshot {
+        Snapshot(metrics: [Metric(kind: "weekly_all", shortLabel: "wk",
+                                  longLabel: "Weekly (all models)",
+                                  percent: percent,
+                                  level: UsageLevel.forPercent(percent),
+                                  resetsAt: t0.addingTimeInterval(48 * 3600))],
+                 fetchedAt: at)
+    }
+
+    var file = AccountsFile()
+    file.accounts = [StoredAccount(uuid: "a", email: "x@y.z", org: nil, plan: nil,
+                                   accessToken: nil, refreshToken: nil, expiresAt: nil,
+                                   addedAt: t0)]
+
+    check("quiet under the first threshold", file.record(snap(20, t0), for: "a").isEmpty)
+    check("history started", file.accounts[0].history["weekly_all"]?.count ?? 0, 1)
+
+    let crossing = file.record(snap(78, t0.addingTimeInterval(3600)), for: "a")
+    check("crossing alerts", crossing.count, 1)
+    check("alerts on the highest passed", Int(crossing.first?.threshold ?? -1), 75)
+    check("alert carries the label", crossing.first?.label ?? "", "Weekly (all models)")
+
+    check("no repeat while still above",
+          file.record(snap(80, t0.addingTimeInterval(7200)), for: "a").isEmpty)
+    check("the next threshold still alerts",
+          Int(file.record(snap(93, t0.addingTimeInterval(10800)), for: "a").first?.threshold ?? -1), 90)
+
+    // After the window rolls over the same thresholds must be able to fire again.
+    _ = file.record(snap(4, t0.addingTimeInterval(14400)), for: "a")
+    check("notification state cleared by a rollover",
+          file.accounts[0].notified["weekly_all"] == nil)
+    check("and it can alert again next cycle",
+          Int(file.record(snap(55, t0.addingTimeInterval(18000)), for: "a").first?.threshold ?? -1), 50)
+
+    check("an unknown account records nothing", file.record(snap(50, t0), for: "nope").isEmpty)
+    check("the snapshot is stored", file.accounts[0].lastSnapshot != nil)
 }
 
 // -------------------------------------------------------------- updates

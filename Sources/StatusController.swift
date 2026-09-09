@@ -49,7 +49,7 @@ private func resetText(_ date: Date?) -> String {
     return "resets in \(m)m"
 }
 
-private func agoText(_ date: Date) -> String {
+func agoText(_ date: Date) -> String {
     let s = Int(Date().timeIntervalSince(date))
     if s < 5 { return "just now" }
     if s < 60 { return "\(s)s ago" }
@@ -62,6 +62,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let barView = UsageBarView()
+    private var desktopPanel: DesktopPanel?
     private let fetcher = UsageFetcher()
     private let accounts = AccountWatcher()
     private let store = AccountStore()
@@ -102,6 +103,20 @@ final class StatusController: NSObject, NSMenuDelegate {
             return UserDefaults.standard.bool(forKey: "autoUpdate")
         }
         set { UserDefaults.standard.set(newValue, forKey: "autoUpdate") }
+    }
+
+    private var showDesktopWidget: Bool {
+        get { UserDefaults.standard.bool(forKey: "showDesktopWidget") }
+        set { UserDefaults.standard.set(newValue, forKey: "showDesktopWidget"); syncDesktopPanel() }
+    }
+
+    /// On by default: being told before you run out is the reason this exists.
+    private var usageAlerts: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "usageAlerts") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "usageAlerts")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "usageAlerts") }
     }
 
     private var pendingUpdate: String? {
@@ -150,6 +165,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
 
         enableLaunchAtLoginOnFirstRun()
+        syncDesktopPanel()
         render()
         captureActive()
         tick(.scheduled)
@@ -221,9 +237,10 @@ final class StatusController: NSObject, NSMenuDelegate {
             var pacer = self.pacers[uuid] ?? FetchPacer(basePollInterval: self.foregroundInterval)
             switch result {
             case .success(let snapshot):
-                self.store.recordSnapshot(snapshot, for: uuid)
+                let alerts = self.store.recordSnapshot(snapshot, for: uuid)
                 self.errors[uuid] = nil
                 pacer.recordSuccess()
+                self.announce(alerts, for: uuid, snapshot: snapshot)
             case .failure(let error):
                 self.errors[uuid] = error
                 pacer.recordFailure(error)
@@ -345,6 +362,61 @@ final class StatusController: NSObject, NSMenuDelegate {
         refreshMenuIfOpen()
     }
 
+    /// Turns threshold crossings into notifications, with the projection as
+    /// the body when there is one — "90%" is a fact, "out by Thursday" is the
+    /// thing that changes what you do.
+    private func announce(_ alerts: [AccountsFile.Alert], for uuid: String, snapshot: Snapshot) {
+        guard usageAlerts, !alerts.isEmpty else { return }
+        let account = store.account(uuid)
+        let name = account?.displayName ?? ""
+        let multiple = store.accounts.count > 1
+
+        for alert in alerts {
+            var body: [String] = []
+            if let history = account?.history[alert.kind],
+               let metric = snapshot.metrics.first(where: { $0.kind == alert.kind }),
+               let text = projectionText(project(history: history,
+                                                 currentPercent: metric.percent,
+                                                 resetsAt: metric.resetsAt)) {
+                body.append(text.replacingOccurrences(of: "at this rate, ", with: "At this rate, "))
+            }
+            if let metric = snapshot.metrics.first(where: { $0.kind == alert.kind }),
+               let reset = metric.resetsAt {
+                body.append(resetText(reset).replacingOccurrences(of: "resets", with: "Resets"))
+            }
+            let title = multiple
+                ? "\(name) · \(alert.label) \(Int(alert.percent.rounded()))%"
+                : "\(alert.label) \(Int(alert.percent.rounded()))%"
+            Notifier.shared.post(title: title,
+                                 body: body.joined(separator: " · "),
+                                 id: "\(uuid)-\(alert.kind)-\(Int(alert.threshold))")
+        }
+    }
+
+    /// The most urgent projection across an account's windows, for the menu.
+    private func projectionNote(for account: StoredAccount) -> String? {
+        guard let snapshot = account.lastSnapshot else { return nil }
+        var soonest: (String, Date)?
+        for metric in snapshot.metrics {
+            guard let history = account.history[metric.kind],
+                  let p = project(history: history,
+                                  currentPercent: metric.percent,
+                                  resetsAt: metric.resetsAt),
+                  p.beforeReset else { continue }
+            if soonest == nil || p.exhaustsAt < soonest!.1 {
+                soonest = (metric.longLabel, p.exhaustsAt)
+            }
+        }
+        guard let (label, at) = soonest else { return nil }
+        let seconds = at.timeIntervalSinceNow
+        guard seconds > 0 else { return "\(label) is out" }
+        let hours = Int(seconds / 3600)
+        let when = hours >= 24 ? "\(hours / 24)d \(hours % 24)h"
+            : hours >= 1 ? "\(hours)h \(Int(seconds / 60) % 60)m"
+            : "\(Int(seconds / 60))m"
+        return "At this rate, \(label.lowercased()) runs out in \(when)"
+    }
+
     // MARK: Menu bar
 
     private func render() {
@@ -387,12 +459,34 @@ final class StatusController: NSObject, NSMenuDelegate {
             button.toolTip = "Loading Claude usage…"
         }
 
+        updateDesktopPanel()
+
         button.title = ""
         button.image = nil
         barView.setGroups(groups)
         item.length = barView.fittingWidth
         let height = button.bounds.height > 0 ? button.bounds.height : NSStatusBar.system.thickness
         barView.frame = NSRect(x: 0, y: 0, width: item.length, height: height)
+    }
+
+    // MARK: Desktop widget
+
+    private func syncDesktopPanel() {
+        if showDesktopWidget {
+            if desktopPanel == nil { desktopPanel = DesktopPanel() }
+            desktopPanel?.orderFront(nil)
+            updateDesktopPanel()
+        } else {
+            desktopPanel?.orderOut(nil)
+            desktopPanel = nil
+        }
+    }
+
+    private func updateDesktopPanel() {
+        guard let panel = desktopPanel else { return }
+        panel.update(accounts: store.accounts,
+                     activeUUID: activeUUID,
+                     stale: { [weak self] in !(self?.isFresh($0) ?? false) })
     }
 
     // MARK: Dropdown
@@ -456,6 +550,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        let widgetItem = add("Desktop Widget", #selector(actionToggleWidget))
+        widgetItem.state = showDesktopWidget ? .on : .off
+        if showDesktopWidget {
+            let onTop = add("Keep Widget on Top", #selector(actionToggleWidgetOnTop))
+            onTop.state = desktopPanel?.keepOnTop == true ? .on : .off
+        }
+        let alertsItem = add("Usage Alerts", #selector(actionToggleAlerts))
+        alertsItem.state = usageAlerts ? .on : .off
         let compactItem = add("Compact Menu Bar", #selector(actionToggleCompact))
         compactItem.state = compact ? .on : .off
         let loginItem = add("Launch at Login", #selector(actionToggleLaunchAtLogin))
@@ -552,6 +654,10 @@ final class StatusController: NSObject, NSMenuDelegate {
             addView(NoteRowView(text), title: text)
         }
 
+        if let note = projectionNote(for: account), !stale {
+            addView(NoteRowView("⚠︎ " + note), title: note)
+        }
+
         // Anything this account is struggling with sits under its own rows,
         // rather than in one global line that cannot say which account it means.
         var notes: [String] = []
@@ -631,6 +737,18 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     @objc private func actionToggleCompact() { compact.toggle() }
+
+    @objc private func actionToggleWidget() { showDesktopWidget.toggle() }
+
+    @objc private func actionToggleWidgetOnTop() {
+        guard let panel = desktopPanel else { return }
+        panel.keepOnTop.toggle()
+    }
+
+    @objc private func actionToggleAlerts() {
+        usageAlerts.toggle()
+        if usageAlerts { Notifier.shared.requestAuthorizationIfNeeded() }
+    }
 
     @objc private func actionCheckUpdates() {
         checkForUpdates(force: true, announce: true)

@@ -110,6 +110,40 @@ desktop app and claude.ai too, not just Claude Code.
 Polling is every 60 seconds, plus on wake from sleep and when you open the
 menu. The endpoint reports usage; it does not consume any.
 
+## Alerts and projection
+
+The app keeps a rolling history of each window and fits a burn rate to it, so
+it can tell you not just where you are but where you are heading:
+
+```
+⚠︎ At this rate, weekly (all models) runs out in 6h 12m
+```
+
+**Usage Alerts** (on by default) notify you at 50%, 75% and 90% of any window.
+Each threshold fires once per window and only the highest one reached, so
+jumping from 40% to 95% is a single alert about 90, not three. When a window
+rolls over the thresholds arm again.
+
+A projection is only ever shown when the window would run out *before* it
+resets — otherwise there is nothing to act on and the app stays quiet. The fit
+is plain least squares over the current window rather than anything more
+reactive, because usage is bursty and a twitchy model would cry wolf every time
+you ran a long task.
+
+## Desktop widget
+
+**Desktop Widget** puts the same readout on your desktop: a frosted panel with
+every account and its bars, draggable anywhere, present on all Spaces, position
+remembered. It sits at desktop level by default, so windows cover it the way
+they cover desktop icons; **Keep Widget on Top** floats it above everything
+instead.
+
+This is a borderless window the app draws, not a WidgetKit widget. A real
+widget is a sandboxed extension that cannot reach either Keychain item, so it
+would need an App Group entitlement, which needs a provisioning profile from a
+paid Apple Developer account. This gets to the same place on screen without
+any of that.
+
 ## Updating
 
 The app updates itself. It checks GitHub for new release tags a few times a
@@ -218,7 +252,7 @@ binary. Click Always Allow once more.
 ## Development
 
 ```bash
-./Tests/run.sh        # 95 assertions: parsing, layout, colour bands, account switching
+./Tests/run.sh        # 137 assertions: parsing, layout, colour bands, account switching
 ./build.sh            # build only, to build/ClaudeMeter.app
 ./build.sh --install  # build, install to /Applications, launch
 ./build.sh --zip      # also produce a zip
@@ -233,6 +267,10 @@ binary. Click Always Allow once more.
 | `Sources/TokenRefresh.swift` | Renewal for accounts Claude Code no longer holds |
 | `Sources/FetchPacer.swift` | Poll spacing, backoff, and which triggers may skip them |
 | `Sources/Updater.swift` | Release checking and the pull-and-rebuild self-update |
+| `Sources/Projection.swift` | History keeping, burn-rate fit, alert thresholds |
+| `Sources/Notifier.swift` | Threshold notifications |
+| `Sources/DesktopPanel.swift` | The desktop widget window and its drawing |
+| `Sources/MenuViews.swift` | Custom dropdown rows: bars, dots, pills, hover |
 | `Sources/StatusController.swift` | Status item, dropdown, polling, launch-at-login |
 | `Sources/main.swift` | Entry point and single-instance guard |
 | `Tools/make-icon.swift` | Draws the app icon; `build.sh` runs it through `iconutil` |
