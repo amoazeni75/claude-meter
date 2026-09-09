@@ -76,7 +76,8 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // Updates
     private var latestTag: String?
-    private var updateCheckedAt: Date?
+    private var lastCheckedAt: Date?
+    private var updateCheckInFlight = false
     private var updateNote: String?
     private var attemptedTag: String?
     private let updateCheckInterval: TimeInterval = 6 * 3600
@@ -272,29 +273,65 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: Updates
 
     /// Asks GitHub for the newest tag, at most every few hours unless forced.
-    private func checkForUpdates(force: Bool = false) {
-        guard Updater.canSelfUpdate else { return }
-        if !force, let at = updateCheckedAt,
+    ///
+    /// `announce` is set for a check the user asked for. Clicking a menu item
+    /// closes the menu, so a result written only into the menu is a result
+    /// nobody sees — an explicit check has to say something itself.
+    private func checkForUpdates(force: Bool = false, announce: Bool = false) {
+        guard Updater.canSelfUpdate, !updateCheckInFlight else { return }
+        if !force, let at = lastCheckedAt,
            Date().timeIntervalSince(at) < updateCheckInterval { return }
-        updateCheckedAt = Date()
+        updateCheckInFlight = true
 
         Updater.checkLatest { [weak self] result in
             guard let self = self else { return }
+            self.updateCheckInFlight = false
+            self.lastCheckedAt = Date()
+
             switch result {
             case .success(let tag):
                 self.latestTag = tag
                 self.updateNote = nil
-                // Applying automatically is the point, but only once per tag
-                // per session — a build that fails must not loop.
-                if self.autoUpdate, let pending = self.pendingUpdate,
-                   pending != self.attemptedTag {
-                    self.applyUpdate(pending)
+                if let pending = self.pendingUpdate {
+                    // Applying automatically is the point, but only once per
+                    // tag per session — a build that fails must not loop.
+                    if self.autoUpdate, pending != self.attemptedTag {
+                        self.applyUpdate(pending)
+                        if announce {
+                            self.say("Updating to \(pending)",
+                                     "Claude Meter is rebuilding itself and will relaunch in a moment.")
+                        }
+                    } else if announce {
+                        self.say("Update available",
+                                 "\(pending) is out. Choose “Install Update” to get it.")
+                    }
+                } else if announce {
+                    self.say("You’re up to date",
+                             "Claude Meter \(appVersion) is the latest version.")
                 }
             case .failure(let error):
                 self.updateNote = error.localizedDescription
+                if announce {
+                    self.say("Couldn’t check for updates", error.localizedDescription)
+                }
             }
-            if self.item.button?.window?.isVisible == true { self.rebuildMenu() }
+            self.refreshMenuIfOpen()
         }
+    }
+
+    private func refreshMenuIfOpen() {
+        if item.button?.window?.isVisible == true { rebuildMenu() }
+    }
+
+    /// A menu-bar app has no window to put a result in, and the menu is shut by
+    /// the time an answer arrives, so an explicit action answers in an alert.
+    private func say(_ title: String, _ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     private func applyUpdate(_ tag: String) {
@@ -305,7 +342,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         } catch {
             updateNote = error.localizedDescription
         }
-        if item.button?.window?.isVisible == true { rebuildMenu() }
+        refreshMenuIfOpen()
     }
 
     // MARK: Menu bar
@@ -445,7 +482,14 @@ final class StatusController: NSObject, NSMenuDelegate {
             }
             let auto = add("Update Automatically", #selector(actionToggleAutoUpdate))
             auto.state = autoUpdate ? .on : .off
-            if let note = updateNote {
+            var note = updateNote
+            if note == nil, let at = lastCheckedAt {
+                note = pendingUpdate == nil
+                    ? "Up to date · checked \(agoText(at))"
+                    : "checked \(agoText(at))"
+            }
+            if updateCheckInFlight { note = "Checking…" }
+            if let note = note {
                 let mi = NSMenuItem()
                 mi.attributedTitle = mono("   " + note, .tertiaryLabelColor, size: 11)
                 mi.isEnabled = false
@@ -609,8 +653,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     @objc private func actionToggleCompact() { compact.toggle() }
 
     @objc private func actionCheckUpdates() {
-        updateNote = "Checking…"
-        checkForUpdates(force: true)
+        checkForUpdates(force: true, announce: true)
     }
 
     @objc private func actionInstallUpdate() {
