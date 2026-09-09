@@ -11,6 +11,12 @@ enum MenuMetrics {
     static let width: CGFloat = 348
     static let inset: CGFloat = 14
     static var content: CGFloat { width - inset * 2 }
+
+    /// Gauge geometry. The row has to grow with the bar, or the bar climbs
+    /// into the label above it.
+    static let barHeight: CGFloat = 9
+    static let barBaseline: CGFloat = 9
+    static var metricRowHeight: CGFloat { barBaseline + barHeight + 20 }
 }
 
 /// Shared behaviour for a row that lives inside an NSMenuItem: hover highlight
@@ -187,7 +193,9 @@ final class MetricRowView: MenuRow {
         self.detail = detail
         self.color = color
         self.dimmed = dimmed
-        super.init(frame: NSRect(x: 0, y: 0, width: MenuMetrics.width, height: 34))
+        super.init(frame: NSRect(x: 0, y: 0,
+                                 width: MenuMetrics.width,
+                                 height: MenuMetrics.metricRowHeight))
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -211,12 +219,15 @@ final class MetricRowView: MenuRow {
         let detailWidth = detail.isEmpty ? 0 : NSAttributedString(
             string: detail, attributes: [.font: detailFont]).size().width
         let barRight = detail.isEmpty ? right : right - detailWidth - 9
-        let bar = NSRect(x: left, y: bounds.minY + 8, width: max(40, barRight - left), height: 5)
+        let bar = NSRect(x: left, y: bounds.minY + MenuMetrics.barBaseline,
+                         width: max(40, barRight - left), height: MenuMetrics.barHeight)
         drawTrack(bar, fraction: percent / 100,
                   color: dimmed ? NSColor.tertiaryLabelColor : color)
 
         if !detail.isEmpty {
-            drawRight(detail, detailFont, .tertiaryLabelColor, maxX: right, y: bounds.minY + 4)
+            // Sit the reset time on the bar's centre line, not the row's floor.
+            drawRight(detail, detailFont, .tertiaryLabelColor,
+                      maxX: right, y: bar.midY - detailFont.capHeight - 2)
         }
     }
 }
