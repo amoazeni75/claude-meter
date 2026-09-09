@@ -22,7 +22,7 @@ func check(_ label: String, _ condition: Bool) {
 }
 
 func bar(_ snap: Snapshot, compact: Bool = false) -> String {
-    barSegments(snap, compact: compact).map(\.text).joined()
+    barText(snap, compact: compact)
 }
 
 func load(_ name: String) -> Data {
@@ -49,6 +49,9 @@ do {
           "Session (5h) | Weekly (all models) | Weekly · Fable")
     check("labeled bar", bar(snap), "5h 76%  wk 92%  fb 61%")
     check("compact bar", bar(snap, compact: true), "76·92·61")
+    check("segments are values only, dividers are drawn",
+          barSegments(snap, compact: false).map(\.text).joined(separator: "|"),
+          "5h 76%|wk 92%|fb 61%")
     check("server severity honoured",
           snap.metrics.map { $0.severity.rawValue }.joined(separator: ","),
           "warning,critical,normal")

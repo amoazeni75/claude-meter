@@ -3,8 +3,12 @@
 Your Claude usage limits, live in the macOS menu bar.
 
 ```
-5h 76%  wk 92%  fb 61%
+╭──────────────────────────────╮
+│  5h 76% │ wk 92% │ fb 61%    │
+╰──────────────────────────────╯
 ```
+
+A rounded chip with a hairline border, each number separated by a faint rule.
 
 - **5h** — current session window (5 hours)
 - **wk** — weekly window, all models
@@ -147,6 +151,7 @@ binary. Click Always Allow once more.
 | File | Role |
 | --- | --- |
 | `Sources/Usage.swift` | Keychain read, API client, response parsing, menu bar layout |
+| `Sources/UsageBarView.swift` | The chip: border, dividers, text (geometry constants at the top) |
 | `Sources/Account.swift` | Signed-in account identity and the `~/.claude.json` watcher |
 | `Sources/StatusController.swift` | Status item, dropdown, polling, launch-at-login |
 | `Sources/main.swift` | Entry point and single-instance guard |

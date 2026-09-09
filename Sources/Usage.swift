@@ -344,20 +344,26 @@ final class UsageFetcher {
 
 // MARK: - Menu bar layout
 
-/// One run of text in the menu bar, plus the severity that should colour it.
-/// Pure and AppKit-free so the exact layout can be tested without a UI.
+/// One number in the menu bar, plus the severity that should colour it.
+/// Pure and AppKit-free so the layout can be tested without a UI. Separators
+/// are not part of this: the view draws a rule between runs rather than
+/// spacing them with characters.
 struct BarSegment {
     let text: String
-    let severity: Severity?
+    let severity: Severity
 }
 
 func barSegments(_ snapshot: Snapshot, compact: Bool) -> [BarSegment] {
-    var out: [BarSegment] = []
-    for (i, m) in snapshot.metrics.enumerated() {
-        if i > 0 { out.append(BarSegment(text: compact ? "\u{00B7}" : "  ", severity: nil)) }
+    snapshot.metrics.map { m in
         let pct = Int(m.percent.rounded())
-        out.append(BarSegment(text: compact ? "\(pct)" : "\(m.shortLabel) \(pct)%",
-                              severity: m.severity))
+        return BarSegment(text: compact ? "\(pct)" : "\(m.shortLabel) \(pct)%",
+                          severity: m.severity)
     }
-    return out
+}
+
+/// Flat text form of the same layout, for tooltips and tests.
+func barText(_ snapshot: Snapshot, compact: Bool) -> String {
+    barSegments(snapshot, compact: compact)
+        .map(\.text)
+        .joined(separator: compact ? "\u{00B7}" : "  ")
 }

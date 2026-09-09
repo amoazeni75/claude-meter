@@ -45,6 +45,7 @@ private func agoText(_ date: Date) -> String {
 final class StatusController: NSObject, NSMenuDelegate {
 
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let barView = UsageBarView()
     private let fetcher = UsageFetcher()
     private let accounts = AccountWatcher()
     private let menu = NSMenu()
@@ -68,7 +69,11 @@ final class StatusController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
         item.menu = menu
-        item.button?.toolTip = "Claude usage"
+        if let button = item.button {
+            button.toolTip = "Claude usage"
+            barView.autoresizingMask = [.width, .height]
+            button.addSubview(barView)
+        }
 
         accounts.onSwitch = { [weak self] _ in
             guard let self = self else { return }
@@ -130,20 +135,13 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     private func render() {
         guard let button = item.button else { return }
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        let out = NSMutableAttributedString()
-
-        func append(_ s: String, _ color: NSColor, _ f: NSFont = font) {
-            out.append(NSAttributedString(string: s, attributes: [.font: f, .foregroundColor: color]))
-        }
+        var runs: [UsageBarView.Run] = []
 
         if let snap = snapshot {
             let stale = lastError != nil
-            for seg in barSegments(snap, compact: compact) {
-                let color: NSColor = stale
-                    ? .tertiaryLabelColor
-                    : (seg.severity?.textColor ?? .tertiaryLabelColor)
-                append(seg.text, color, font)
+            runs = barSegments(snap, compact: compact).map {
+                UsageBarView.Run(text: $0.text,
+                                 color: stale ? .tertiaryLabelColor : $0.severity.textColor)
             }
             button.toolTip = snap.metrics
                 .map { "\($0.longLabel): \(Int($0.percent.rounded()))%" }
@@ -154,16 +152,24 @@ final class StatusController: NSObject, NSMenuDelegate {
             case .notSignedIn:    short = "claude: sign in"
             case .unauthorized:   short = "claude: auth"
             case .keychainDenied: short = "claude: keychain"
-            default:              short = "claude —"
+            default:              short = "claude \u{2014}"
             }
-            append(short, .secondaryLabelColor)
+            runs = [UsageBarView.Run(text: short, color: .secondaryLabelColor)]
             button.toolTip = err.localizedDescription
         } else {
-            append("claude …", .secondaryLabelColor)
-            button.toolTip = "Loading Claude usage…"
+            runs = [UsageBarView.Run(text: "claude \u{2026}", color: .secondaryLabelColor)]
+            button.toolTip = "Loading Claude usage\u{2026}"
         }
 
-        button.attributedTitle = out
+        // The custom view owns the whole readout, so the button must not also
+        // draw a title of its own.
+        button.title = ""
+        button.image = nil
+
+        barView.setRuns(runs)
+        item.length = barView.fittingWidth
+        let height = button.bounds.height > 0 ? button.bounds.height : NSStatusBar.system.thickness
+        barView.frame = NSRect(x: 0, y: 0, width: item.length, height: height)
     }
 
     // MARK: Dropdown
