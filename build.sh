@@ -58,6 +58,11 @@ fi
 rm -f "$BUILD/$NAME-arm64" "$BUILD/$NAME-x86_64"
 chmod +x "$APP/Contents/MacOS/$NAME"
 
+echo "==> Generating icon"
+swift "$ROOT/Tools/make-icon.swift" "$BUILD/AppIcon.iconset" >/dev/null
+iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$BUILD/AppIcon.iconset"
+
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 

@@ -1,15 +1,26 @@
 import Cocoa
 import ServiceManagement
 
-extension Severity {
-    /// Colour for a number in the menu bar: green while you have room, amber
-    /// as you approach the cap, red once you're nearly out.
-    var textColor: NSColor {
+extension UsageLevel {
+    /// Colour for the percentage. Labels beside it stay neutral, so the only
+    /// thing carrying colour is the number the colour is about.
+    var color: NSColor {
         switch self {
-        case .normal: return .systemGreen
-        case .warning: return .systemOrange
+        case .low:      return .systemGreen
+        case .moderate: return .usageYellow
+        case .high:     return .systemOrange
         case .critical: return .systemRed
         }
+    }
+}
+
+extension NSColor {
+    /// systemYellow is tuned for fills; as text on a light menu bar it is
+    /// close to invisible. Keep it in dark mode, darken it to a gold in light.
+    static let usageYellow = NSColor(name: "usageYellow") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? .systemYellow
+            : NSColor(srgbRed: 0.62, green: 0.47, blue: 0.02, alpha: 1)
     }
 }
 
@@ -135,17 +146,25 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     private func render() {
         guard let button = item.button else { return }
-        var runs: [UsageBarView.Run] = []
+        var groups: [[UsageBarView.Run]] = []
 
         if let snap = snapshot {
-            // One colour for the whole readout, taken from whichever window is
-            // closest to its limit. Colouring each number separately turned the
-            // chip into three competing signals when it only has one thing to
-            // say: how close you are to running out.
+            // Labels are all the same neutral colour; only the percentages are
+            // tinted, by their own band. The colour then means one thing —
+            // how full that particular window is — instead of also being part
+            // of how the label is styled.
             let stale = lastError != nil
-            let color: NSColor = stale ? .tertiaryLabelColor : snap.worst.textColor
-            runs = barSegments(snap, compact: compact).map {
-                UsageBarView.Run(text: $0.text, color: color)
+            groups = barSegments(snap, compact: compact).map { seg in
+                var runs: [UsageBarView.Run] = []
+                if let label = seg.label {
+                    runs.append(UsageBarView.Run(
+                        text: label,
+                        color: stale ? .tertiaryLabelColor : .secondaryLabelColor))
+                }
+                runs.append(UsageBarView.Run(
+                    text: seg.value,
+                    color: stale ? .tertiaryLabelColor : seg.level.color))
+                return runs
             }
             button.toolTip = snap.metrics
                 .map { "\($0.longLabel): \(Int($0.percent.rounded()))%" }
@@ -158,10 +177,10 @@ final class StatusController: NSObject, NSMenuDelegate {
             case .keychainDenied: short = "claude: keychain"
             default:              short = "claude \u{2014}"
             }
-            runs = [UsageBarView.Run(text: short, color: .secondaryLabelColor)]
+            groups = [[UsageBarView.Run(text: short, color: .secondaryLabelColor)]]
             button.toolTip = err.localizedDescription
         } else {
-            runs = [UsageBarView.Run(text: "claude \u{2026}", color: .secondaryLabelColor)]
+            groups = [[UsageBarView.Run(text: "claude \u{2026}", color: .secondaryLabelColor)]]
             button.toolTip = "Loading Claude usage\u{2026}"
         }
 
@@ -170,7 +189,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         button.title = ""
         button.image = nil
 
-        barView.setRuns(runs)
+        barView.setGroups(groups)
         item.length = barView.fittingWidth
         let height = button.bounds.height > 0 ? button.bounds.height : NSStatusBar.system.thickness
         barView.frame = NSRect(x: 0, y: 0, width: item.length, height: height)
@@ -214,11 +233,11 @@ final class StatusController: NSObject, NSMenuDelegate {
                     + String(format: "%3d%%", Int(m.percent.rounded()))
                     + "   \(resetText(m.resetsAt))"
                 let s = NSMutableAttributedString(attributedString: mono(line))
-                // Tint just the gauge + number by that metric's own severity.
+                // Tint just the gauge + number by that metric's own band.
                 let gaugeStart = 21
                 let gaugeLen = min(12 + 6, max(0, s.length - gaugeStart))
                 if gaugeLen > 0 {
-                    s.addAttribute(.foregroundColor, value: m.severity.textColor,
+                    s.addAttribute(.foregroundColor, value: m.level.color,
                                    range: NSRange(location: gaugeStart, length: gaugeLen))
                 }
                 mi.attributedTitle = s

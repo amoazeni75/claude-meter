@@ -14,9 +14,18 @@ A rounded chip with a hairline border, each number separated by a faint rule.
 - **wk** — weekly window, all models
 - **fb** — weekly window for Fable (per-model cap)
 
-The whole readout takes one colour from whichever window is closest to its
-limit: green while you have room, amber past 75%, red past 90% — so you notice
-before you run out.
+Labels stay neutral; each percentage is coloured by how full that window is,
+so the colour only ever means one thing:
+
+| Usage | Colour |
+| --- | --- |
+| 0–50% | green |
+| 50–75% | yellow |
+| 75–90% | orange |
+| 90–100% | red |
+
+Bands come from the percentage alone, not from the `severity` the API also
+sends, so a given number always reads the same colour.
 Click for a breakdown with reset countdowns.
 
 ```
@@ -143,7 +152,7 @@ binary. Click Always Allow once more.
 ## Development
 
 ```bash
-./Tests/run.sh        # 39 assertions: parsing, layout, severity, account switching
+./Tests/run.sh        # 47 assertions: parsing, layout, colour bands, account switching
 ./build.sh            # build only, to build/ClaudeMeter.app
 ./build.sh --install  # build, install to /Applications, launch
 ./build.sh --zip      # also produce a zip
@@ -156,6 +165,7 @@ binary. Click Always Allow once more.
 | `Sources/Account.swift` | Signed-in account identity and the `~/.claude.json` watcher |
 | `Sources/StatusController.swift` | Status item, dropdown, polling, launch-at-login |
 | `Sources/main.swift` | Entry point and single-instance guard |
+| `Tools/make-icon.swift` | Draws the app icon; `build.sh` runs it through `iconutil` |
 
 The build produces a universal binary (arm64 + x86_64), so the same app runs on
 Apple Silicon and Intel.

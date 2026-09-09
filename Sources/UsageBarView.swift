@@ -18,16 +18,19 @@ final class UsageBarView: NSView {
     private let outerMarginY: CGFloat = 3   // inset of the chip from the bar height
     private let padX: CGFloat = 7           // inside the border, before the first number
     private let gap: CGFloat = 6            // each side of a divider
+    private let labelGap: CGFloat = 4       // between a label and its value
     private let dividerWidth: CGFloat = 1
     private let dividerHeightRatio: CGFloat = 0.5   // "small": half the chip height
     private let cornerRadius: CGFloat = 5.5
 
     private let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
 
-    private var runs: [Run] = []
+    /// Each group is drawn as one unit — a label and its value — with a rule
+    /// between groups but not inside them.
+    private var groups: [[Run]] = []
 
-    func setRuns(_ runs: [Run]) {
-        self.runs = runs
+    func setGroups(_ groups: [[Run]]) {
+        self.groups = groups
         invalidateIntrinsicContentSize()
         needsDisplay = true
     }
@@ -43,10 +46,11 @@ final class UsageBarView: NSView {
 
     /// Width the status item needs to show everything without clipping.
     var fittingWidth: CGFloat {
-        guard !runs.isEmpty else { return 0 }
-        let text = runs.reduce(CGFloat(0)) { $0 + attributed($1).size().width }
-        let rules = CGFloat(runs.count - 1) * (gap * 2 + dividerWidth)
-        return (outerMarginX + padX) * 2 + text + rules
+        guard !groups.isEmpty else { return 0 }
+        let text = groups.flatMap { $0 }.reduce(CGFloat(0)) { $0 + attributed($1).size().width }
+        let inner = groups.reduce(CGFloat(0)) { $0 + CGFloat(max(0, $1.count - 1)) * labelGap }
+        let rules = CGFloat(groups.count - 1) * (gap * 2 + dividerWidth)
+        return (outerMarginX + padX) * 2 + text + inner + rules
     }
 
     override var intrinsicContentSize: NSSize {
@@ -65,7 +69,7 @@ final class UsageBarView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        guard !runs.isEmpty else { return }
+        guard !groups.isEmpty else { return }
 
         let chip = NSRect(
             x: outerMarginX,
@@ -88,7 +92,7 @@ final class UsageBarView: NSView {
         let ruleHeight = (chip.height * dividerHeightRatio).rounded()
         var x = chip.minX + padX
 
-        for (i, run) in runs.enumerated() {
+        for (i, group) in groups.enumerated() {
             if i > 0 {
                 x += gap
                 NSColor.quaternaryLabelColor.setFill()
@@ -98,10 +102,13 @@ final class UsageBarView: NSView {
                        height: ruleHeight).fill()
                 x += dividerWidth + gap
             }
-            let text = attributed(run)
-            let size = text.size()
-            text.draw(at: NSPoint(x: x, y: chip.midY - size.height / 2))
-            x += size.width
+            for (j, run) in group.enumerated() {
+                if j > 0 { x += labelGap }
+                let text = attributed(run)
+                let size = text.size()
+                text.draw(at: NSPoint(x: x, y: chip.midY - size.height / 2))
+                x += size.width
+            }
         }
     }
 }

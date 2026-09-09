@@ -1,26 +1,26 @@
 import Foundation
 import Security
 
-// MARK: - Severity
+// MARK: - Usage level
 
-enum Severity: String {
-    case normal, warning, critical
+/// How close one window is to its limit, in four bands.
+///
+/// Derived from the percentage alone rather than from the `severity` the API
+/// also sends, so that the same number always reads as the same colour and the
+/// bands stay where they are documented to be.
+enum UsageLevel: String {
+    case low        // under 50%
+    case moderate   // 50–75%
+    case high       // 75–90%
+    case critical   // 90% and up
 
-    var rank: Int {
-        switch self {
-        case .normal: return 0
-        case .warning: return 1
-        case .critical: return 2
+    static func forPercent(_ percent: Double) -> UsageLevel {
+        switch percent {
+        case ..<50: return .low
+        case ..<75: return .moderate
+        case ..<90: return .high
+        default:    return .critical
         }
-    }
-
-    /// Trust the server's own severity when it sends one; otherwise fall back to
-    /// the same thresholds Claude Code uses for its warnings.
-    static func derive(percent: Double, server: String?) -> Severity {
-        if let s = server, let v = Severity(rawValue: s.lowercased()) { return v }
-        if percent >= 90 { return .critical }
-        if percent >= 75 { return .warning }
-        return .normal
     }
 }
 
@@ -31,17 +31,13 @@ struct Metric {
     let shortLabel: String  // "5h" | "wk" | "fb"
     let longLabel: String   // "Session (5h)" | "Weekly (all models)" | "Weekly · Fable"
     let percent: Double
-    let severity: Severity
+    let level: UsageLevel
     let resetsAt: Date?
 }
 
 struct Snapshot {
     let metrics: [Metric]
     let fetchedAt: Date
-
-    var worst: Severity {
-        metrics.map(\.severity).max(by: { $0.rank < $1.rank }) ?? .normal
-    }
 }
 
 // MARK: - Errors
@@ -217,23 +213,23 @@ func makeSnapshot(from data: Data) throws -> Snapshot {
 
     for l in r.limits ?? [] {
         guard let pct = l.percent else { continue }
-        let sev = Severity.derive(percent: pct, server: l.severity)
+        let level = UsageLevel.forPercent(pct)
         let at = parseTimestamp(l.resets_at)
 
         switch l.kind {
         case "session":
             session = Metric(kind: "session", shortLabel: "5h",
                              longLabel: "Session (5h)",
-                             percent: pct, severity: sev, resetsAt: at)
+                             percent: pct, level: level, resetsAt: at)
         case "weekly_all":
             weekly = Metric(kind: "weekly_all", shortLabel: "wk",
                             longLabel: "Weekly (all models)",
-                            percent: pct, severity: sev, resetsAt: at)
+                            percent: pct, level: level, resetsAt: at)
         case "weekly_scoped":
             let name = l.scope?.model?.display_name ?? "Model"
             scoped.append(Metric(kind: "weekly_scoped", shortLabel: abbreviate(name),
                                  longLabel: "Weekly · \(name)",
-                                 percent: pct, severity: sev, resetsAt: at))
+                                 percent: pct, level: level, resetsAt: at))
         default:
             continue
         }
@@ -241,12 +237,12 @@ func makeSnapshot(from data: Data) throws -> Snapshot {
 
     if session == nil, let u = r.five_hour?.utilization {
         session = Metric(kind: "session", shortLabel: "5h", longLabel: "Session (5h)",
-                         percent: u, severity: Severity.derive(percent: u, server: nil),
+                         percent: u, level: UsageLevel.forPercent(u),
                          resetsAt: parseTimestamp(r.five_hour?.resets_at))
     }
     if weekly == nil, let u = r.seven_day?.utilization {
         weekly = Metric(kind: "weekly_all", shortLabel: "wk", longLabel: "Weekly (all models)",
-                        percent: u, severity: Severity.derive(percent: u, server: nil),
+                        percent: u, level: UsageLevel.forPercent(u),
                         resetsAt: parseTimestamp(r.seven_day?.resets_at))
     }
 
@@ -344,20 +340,31 @@ final class UsageFetcher {
 
 // MARK: - Menu bar layout
 
-/// One number in the menu bar, plus the severity that should colour it.
+/// One metric in the menu bar: a neutral label and the value that carries the
+/// colour. They are separate because only the number is coloured — the label
+/// beside it stays the same for all three.
+///
 /// Pure and AppKit-free so the layout can be tested without a UI. Separators
-/// are not part of this: the view draws a rule between runs rather than
+/// are not part of this: the view draws a rule between segments rather than
 /// spacing them with characters.
 struct BarSegment {
-    let text: String
-    let severity: Severity
+    let label: String?      // nil in compact mode, where labels are dropped
+    let value: String
+    let level: UsageLevel
+
+    /// Flat form, for tooltips and tests.
+    var text: String {
+        guard let label = label else { return value }
+        return "\(label) \(value)"
+    }
 }
 
 func barSegments(_ snapshot: Snapshot, compact: Bool) -> [BarSegment] {
     snapshot.metrics.map { m in
         let pct = Int(m.percent.rounded())
-        return BarSegment(text: compact ? "\(pct)" : "\(m.shortLabel) \(pct)%",
-                          severity: m.severity)
+        return BarSegment(label: compact ? nil : m.shortLabel,
+                          value: compact ? "\(pct)" : "\(pct)%",
+                          level: m.level)
     }
 }
 

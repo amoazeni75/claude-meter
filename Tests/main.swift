@@ -52,10 +52,15 @@ do {
     check("segments are values only, dividers are drawn",
           barSegments(snap, compact: false).map(\.text).joined(separator: "|"),
           "5h 76%|wk 92%|fb 61%")
-    check("server severity honoured",
-          snap.metrics.map { $0.severity.rawValue }.joined(separator: ","),
-          "warning,critical,normal")
-    check("worst severity computed", snap.worst == .critical)
+    check("bands from percentage",
+          snap.metrics.map { $0.level.rawValue }.joined(separator: ","),
+          "high,critical,moderate")
+    check("label and value are separate runs",
+          barSegments(snap, compact: false)
+              .map { "\($0.label ?? "-")/\($0.value)" }.joined(separator: " "),
+          "5h/76% wk/92% fb/61%")
+    check("compact drops labels entirely",
+          barSegments(snap, compact: true).allSatisfy { $0.label == nil })
     check("microsecond timestamp parsed", snap.metrics[0].resetsAt != nil)
     let ts = snap.metrics[0].resetsAt.map { Int($0.timeIntervalSince1970) } ?? 0
     check("timestamp value", "\(ts)", "1788968999")
@@ -70,9 +75,9 @@ do {
     let snap = try makeSnapshot(from: load("legacy.json"))
     check("two metrics", snap.metrics.count == 2)
     check("labeled bar", bar(snap), "5h 12%  wk 48%")
-    check("threshold severity when server omits it",
-          snap.metrics.map { $0.severity.rawValue }.joined(separator: ","),
-          "normal,normal")
+    check("bands on the legacy shape",
+          snap.metrics.map { $0.level.rawValue }.joined(separator: ","),
+          "low,low")
 } catch {
     failures += 1; print("  FAIL threw \(error)")
 }
@@ -87,9 +92,10 @@ do {
     check("scoped sorted by percent desc",
           snap.metrics.map { Int($0.percent.rounded()) }.map(String.init).joined(separator: ","),
           "3,50,88,20")
-    check("derived severity at 88 is warning", snap.metrics[2].severity == .warning)
-    check("derived severity at 50 is normal", snap.metrics[1].severity == .normal)
-    check("single bar colour comes from the worst window", snap.worst == .warning)
+    check("88 is high", snap.metrics[2].level == .high)
+    check("50 is moderate", snap.metrics[1].level == .moderate)
+    check("3.4 is low", snap.metrics[0].level == .low)
+    check("20 is low", snap.metrics[3].level == .low)
     check("bar", bar(snap), "5h 3%  wk 50%  qu 88%  op 20%")
 } catch {
     failures += 1; print("  FAIL threw \(error)")
@@ -132,12 +138,15 @@ check("millisecond timestamp", parseTimestamp("2026-09-12T07:59:59.645+00:00") !
 check("no-fraction timestamp", parseTimestamp("2026-09-12T07:59:59+00:00") != nil)
 check("nil timestamp", parseTimestamp(nil) == nil)
 check("junk timestamp", parseTimestamp("tomorrow") == nil)
-check("severity threshold 90 -> critical", Severity.derive(percent: 90, server: nil) == .critical)
-check("severity threshold 75 -> warning", Severity.derive(percent: 75, server: nil) == .warning)
-check("severity threshold 74 -> normal", Severity.derive(percent: 74, server: nil) == .normal)
-check("server severity wins", Severity.derive(percent: 1, server: "critical") == .critical)
-check("unknown server severity falls back",
-      Severity.derive(percent: 95, server: "chartreuse") == .critical)
+check("0 -> low",           UsageLevel.forPercent(0) == .low)
+check("49.9 -> low",        UsageLevel.forPercent(49.9) == .low)
+check("50 -> moderate",     UsageLevel.forPercent(50) == .moderate)
+check("74.9 -> moderate",   UsageLevel.forPercent(74.9) == .moderate)
+check("75 -> high",         UsageLevel.forPercent(75) == .high)
+check("89.9 -> high",       UsageLevel.forPercent(89.9) == .high)
+check("90 -> critical",     UsageLevel.forPercent(90) == .critical)
+check("100 -> critical",    UsageLevel.forPercent(100) == .critical)
+check("over 100 -> critical", UsageLevel.forPercent(140) == .critical)
 
 // -------------------------------------------------------------- account
 
