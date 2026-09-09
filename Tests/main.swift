@@ -89,6 +89,7 @@ do {
           "3,50,88,20")
     check("derived severity at 88 is warning", snap.metrics[2].severity == .warning)
     check("derived severity at 50 is normal", snap.metrics[1].severity == .normal)
+    check("single bar colour comes from the worst window", snap.worst == .warning)
     check("bar", bar(snap), "5h 3%  wk 50%  qu 88%  op 20%")
 } catch {
     failures += 1; print("  FAIL threw \(error)")

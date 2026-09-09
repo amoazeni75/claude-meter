@@ -14,8 +14,9 @@ A rounded chip with a hairline border, each number separated by a faint rule.
 - **wk** — weekly window, all models
 - **fb** — weekly window for Fable (per-model cap)
 
-Numbers are green while you have room, amber past 75%, red past 90% — so you
-notice before you run out.
+The whole readout takes one colour from whichever window is closest to its
+limit: green while you have room, amber past 75%, red past 90% — so you notice
+before you run out.
 Click for a breakdown with reset countdowns.
 
 ```

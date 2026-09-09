@@ -138,10 +138,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         var runs: [UsageBarView.Run] = []
 
         if let snap = snapshot {
+            // One colour for the whole readout, taken from whichever window is
+            // closest to its limit. Colouring each number separately turned the
+            // chip into three competing signals when it only has one thing to
+            // say: how close you are to running out.
             let stale = lastError != nil
+            let color: NSColor = stale ? .tertiaryLabelColor : snap.worst.textColor
             runs = barSegments(snap, compact: compact).map {
-                UsageBarView.Run(text: $0.text,
-                                 color: stale ? .tertiaryLabelColor : $0.severity.textColor)
+                UsageBarView.Run(text: $0.text, color: color)
             }
             button.toolTip = snap.metrics
                 .map { "\($0.longLabel): \(Int($0.percent.rounded()))%" }
