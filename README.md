@@ -10,7 +10,8 @@ Your Claude usage limits, live in the macOS menu bar.
 - **wk** — weekly window, all models
 - **fb** — weekly window for Fable (per-model cap)
 
-Numbers turn amber past 75% and red past 90%, so you notice before you run out.
+Numbers are green while you have room, amber past 75%, red past 90% — so you
+notice before you run out.
 Click for a breakdown with reset countdowns.
 
 ```

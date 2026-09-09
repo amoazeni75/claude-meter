@@ -2,11 +2,11 @@ import Cocoa
 import ServiceManagement
 
 extension Severity {
-    /// Colour for a number in the menu bar. Normal stays neutral so the bar
-    /// isn't shouting at you all day.
+    /// Colour for a number in the menu bar: green while you have room, amber
+    /// as you approach the cap, red once you're nearly out.
     var textColor: NSColor {
         switch self {
-        case .normal: return .labelColor
+        case .normal: return .systemGreen
         case .warning: return .systemOrange
         case .critical: return .systemRed
         }
