@@ -29,27 +29,37 @@ sends, so a given number always reads the same colour.
 Click for a breakdown with reset countdowns.
 
 ```
- ACCOUNTS
- ✓ you@example.com · Max              signed in · 12s ago
-     Session (5h)         █████████░░░  76%   resets in 1h 12m
-     Weekly (all models)  ███████████░  92%   resets in 2d 16h
-     Weekly · Fable       ███████░░░░░  61%   resets in 2d 16h
-   ─────────────────────────────────────────────────────────
-   other@example.com · Max                        3h ago
-     Session (5h)         ██░░░░░░░░░░  12%   resets in 4h 02m
-     Weekly (all models)  █████░░░░░░░  41%   resets in 5d 03h
- ─────────────────────────────────────────────────────────
- Refresh Now                                            ⌘R
- Follow Signed-in Account                                ✓
- Add Another Account…
- Forget Account                                          ▸
- ─────────────────────────────────────────────────────────
- Compact Menu Bar
- Launch at Login                                         ✓
- Open Usage on claude.ai
- ─────────────────────────────────────────────────────────
- Quit Claude Meter                                      ⌘Q
+  ACCOUNTS
+  ● you@example.com   MAX          signed in · 12s ago
+      Session (5h)                              76%
+      ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▭▭▭▭▭▭▭   resets in 1h 12m
+      Weekly (all models)                       92%
+      ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▭▭   resets in 2d 16h
+      Weekly · Fable                            61%
+      ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▭▭▭▭▭▭▭▭▭▭▭▭   resets in 2d 16h
+  ─────────────────────────────────────────────────────
+  ○ other@example.com  MAX                    3h ago
+      Session (5h)                              12%
+      ▬▬▬▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭▭   resets in 4h 02m
+  ─────────────────────────────────────────────────────
+  Refresh Now                                       ⌘R
+  Follow Signed-in Account                           ✓
+  Add Another Account…
+  ─────────────────────────────────────────────────────
+  Check for Updates
+  Update Automatically                               ✓
+     Up to date · checked 5m ago
+  ─────────────────────────────────────────────────────
+  Compact Menu Bar
+  Launch at Login                                    ✓
+  Quit Claude Meter                                 ⌘Q
 ```
+
+The bars are drawn, not typed: real rounded progress tracks coloured by band,
+with hover states on the rows you can click. A filled dot marks the account the
+menu bar is following, a hollow one the accounts it isn't. Every account gets
+its full readout, so you can see where all of them stand without switching, and
+anything not current is dimmed and carries its age.
 
 Every account gets its full readout, so you can see where all of them stand
 without switching. The tick marks which account the menu bar follows; click

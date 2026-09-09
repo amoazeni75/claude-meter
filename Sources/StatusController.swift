@@ -418,17 +418,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         let displayedID = displayedUUID
 
         // --- Accounts -------------------------------------------------------
-        let header = NSMenuItem()
-        header.attributedTitle = mono(all.count > 1 ? "ACCOUNTS" : "ACCOUNT",
-                                      .tertiaryLabelColor, size: 10)
-        header.isEnabled = false
-        menu.addItem(header)
+        addView(SectionHeaderView(all.count > 1 ? "Accounts" : "Account"),
+                title: "Accounts")
 
         if all.isEmpty {
-            let mi = NSMenuItem()
-            mi.attributedTitle = mono("Not signed in — run `claude`", .secondaryLabelColor, size: 11)
-            mi.isEnabled = false
-            menu.addItem(mi)
+            addView(NoteRowView("Not signed in — run `claude`", indented: false),
+                    title: "Not signed in")
         }
 
         for (i, account) in all.enumerated() {
@@ -490,87 +485,75 @@ final class StatusController: NSObject, NSMenuDelegate {
             }
             if updateCheckInFlight { note = "Checking…" }
             if let note = note {
-                let mi = NSMenuItem()
-                mi.attributedTitle = mono("   " + note, .tertiaryLabelColor, size: 11)
-                mi.isEnabled = false
-                menu.addItem(mi)
+                addView(NoteRowView(note, indented: false), title: note)
             }
         }
 
         menu.addItem(.separator())
 
-        let version = NSMenuItem()
-        version.attributedTitle = mono("Claude Meter \(appVersion)", .tertiaryLabelColor, size: 10)
-        version.isEnabled = false
-        menu.addItem(version)
+        addView(NoteRowView("Claude Meter \(appVersion)", indented: false),
+                title: "Claude Meter \(appVersion)")
 
         add("Quit Claude Meter", #selector(actionQuit), key: "q")
     }
 
-    /// One account: a selectable header naming it, then its own usage gauges.
-    /// Every account gets the full readout, so the window answers "where am I
-    /// on each of these" without having to switch between them.
+    /// Adds a custom view as a menu item. NSMenu only styles text, so anything
+    /// with a drawn bar or its own layout arrives this way.
+    @discardableResult
+    private func addView(_ view: NSView, title: String,
+                         action: Selector? = nil,
+                         represented: Any? = nil,
+                         state: NSControl.StateValue = .off) -> NSMenuItem {
+        let mi = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        mi.target = action == nil ? nil : self
+        mi.representedObject = represented
+        mi.state = state
+        mi.isEnabled = action != nil
+        mi.view = view
+        menu.addItem(mi)
+        return mi
+    }
+
+    /// One account: a header naming it, then its own gauges. Every account gets
+    /// the full readout, so the window answers "where am I on each of these"
+    /// without switching between them.
     private func addRows(for account: StoredAccount, activeID: String?, displayedID: String?) {
         let stale = !isFresh(account)
-        let nameWidth = 40
+        let selected = account.uuid == displayedID
 
-        // The checkmark marks which account the menu bar follows. That is a
-        // different thing from which one is signed in, so the right-hand
-        // column says that separately.
-        let head = NSMenuItem(title: "", action: #selector(actionSelectAccount(_:)), keyEquivalent: "")
-        head.target = self
-        head.representedObject = account.uuid
-        head.state = account.uuid == displayedID ? .on : .off
-
-        var name = clip(account.displayName, 30)
-        if let plan = account.plan { name += " \u{00B7} \(plan)" }
+        let worst = account.lastSnapshot?.metrics.max(by: { $0.level.rank < $1.level.rank })?.level
+        let accent: NSColor = stale ? .tertiaryLabelColor : (worst?.color ?? .systemGreen)
 
         var status = account.lastFetchedAt.map(agoText) ?? "no data"
-        if account.uuid == activeID { status = "signed in \u{00B7} " + status }
+        if account.uuid == activeID { status = "signed in · " + status }
 
-        head.attributedTitle = NSAttributedString(
-            string: pad(name, nameWidth) + status,
-            attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold),
-                .foregroundColor: stale ? NSColor.secondaryLabelColor : NSColor.labelColor,
-            ])
-        head.isEnabled = true
-        menu.addItem(head)
+        addView(AccountHeaderView(name: clip(account.displayName, 30),
+                                  plan: account.plan,
+                                  status: status,
+                                  accent: accent,
+                                  selected: selected,
+                                  dimmed: stale),
+                title: account.displayName,
+                action: #selector(actionSelectAccount(_:)),
+                represented: account.uuid,
+                state: selected ? .on : .off)
 
         if let snapshot = account.lastSnapshot {
             for metric in snapshot.metrics {
-                let mi = NSMenuItem()
-                let indent = "   "
-                let line = indent + pad(metric.longLabel, 21)
-                    + gauge(metric.percent) + " "
-                    + String(format: "%3d%%", Int(metric.percent.rounded()))
-                    + "   " + resetText(metric.resetsAt)
-                let s = NSMutableAttributedString(attributedString: mono(line))
-                if stale {
-                    s.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor,
-                                   range: NSRange(location: 0, length: s.length))
-                } else {
-                    let start = indent.count + 21
-                    let length = min(18, max(0, s.length - start))
-                    if length > 0 {
-                        s.addAttribute(.foregroundColor, value: metric.level.color,
-                                       range: NSRange(location: start, length: length))
-                    }
-                }
-                mi.attributedTitle = s
-                mi.isEnabled = false
-                menu.addItem(mi)
+                addView(MetricRowView(label: metric.longLabel,
+                                      percent: metric.percent,
+                                      detail: resetText(metric.resetsAt),
+                                      color: metric.level.color,
+                                      dimmed: stale),
+                        title: "\(metric.longLabel) \(Int(metric.percent.rounded()))%")
             }
         } else {
-            let mi = NSMenuItem()
             let text = errors[account.uuid]?.localizedDescription ?? "no readings yet"
-            mi.attributedTitle = mono("   " + text, .tertiaryLabelColor, size: 11)
-            mi.isEnabled = false
-            menu.addItem(mi)
+            addView(NoteRowView(text), title: text)
         }
 
         // Anything this account is struggling with sits under its own rows,
-        // rather than in one global status line that cannot say which.
+        // rather than in one global line that cannot say which account it means.
         var notes: [String] = []
         if account.lastSnapshot != nil, let error = errors[account.uuid] {
             notes.append(error.localizedDescription)
@@ -579,11 +562,8 @@ final class StatusController: NSObject, NSMenuDelegate {
             notes.append("next try in \(Int(wait.rounded()))s")
         }
         if !notes.isEmpty {
-            let mi = NSMenuItem()
-            mi.attributedTitle = mono("   " + notes.joined(separator: " \u{00B7} "),
-                                      .tertiaryLabelColor, size: 11)
-            mi.isEnabled = false
-            menu.addItem(mi)
+            let text = notes.joined(separator: " · ")
+            addView(NoteRowView(text), title: text)
         }
     }
 

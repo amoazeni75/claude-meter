@@ -14,6 +14,15 @@ enum UsageLevel: String, Codable {
     case high       // 75–90%
     case critical   // 90% and up
 
+    var rank: Int {
+        switch self {
+        case .low: return 0
+        case .moderate: return 1
+        case .high: return 2
+        case .critical: return 3
+        }
+    }
+
     static func forPercent(_ percent: Double) -> UsageLevel {
         switch percent {
         case ..<50: return .low
